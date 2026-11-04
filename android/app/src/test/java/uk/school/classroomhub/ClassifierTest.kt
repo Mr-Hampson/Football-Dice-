@@ -7,7 +7,8 @@ import org.junit.Test
 class ClassifierTest {
     private val lesson = Lesson(
         active = true,
-        className = "S2",
+        title = "S2",
+        name = "Amy K",
         allowedDomains = listOf("bbc.co.uk", "classroom.google.com"),
         allowedApps = listOf("com.amazon.kindle"),
     )
@@ -72,5 +73,15 @@ class ClassifierTest {
         assertNull(Classifier.domainFromText("how to draw a cat"))
         assertNull(Classifier.domainFromText("bitesize"))
         assertNull(Classifier.domainFromText(null))
+    }
+
+    @Test fun pupilNames() {
+        assertNull(Names.problemWith("Amy K"))
+        assertNull(Names.problemWith("  amy   k. "))
+        assertNull(Names.problemWith("Mary-Jane O"))
+        assertNull(Names.problemWith("Seán Ó"))
+        assertEquals(Names.HINT, Names.problemWith("Amy"))
+        assertEquals(Names.HINT, Names.problemWith("Amy Kerr"))
+        assertEquals(Names.HINT, Names.problemWith("x1 k"))
     }
 }

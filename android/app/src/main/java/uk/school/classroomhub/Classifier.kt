@@ -1,11 +1,15 @@
 package uk.school.classroomhub
 
-/** The lesson settings sent by the hub. */
+/** The lesson this tablet has joined, as sent by the hub. */
 data class Lesson(
     val active: Boolean,
-    val className: String,
-    val allowedDomains: List<String>,
-    val allowedApps: List<String>,
+    val title: String = "",
+    /** The name the pupil typed when joining, e.g. "Amy K". */
+    val name: String = "",
+    /** The teacher has asked the pupil to type their name again. */
+    val nameRequested: Boolean = false,
+    val allowedDomains: List<String> = emptyList(),
+    val allowedApps: List<String> = emptyList(),
 )
 
 /** What we tell the teacher. Only off-task reports include the site or app. */

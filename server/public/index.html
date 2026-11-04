@@ -11,10 +11,8 @@
   <header class="topbar">
     <h1>Classroom Hub</h1>
     <div class="topbar-controls" id="topbarControls" hidden>
-      <label class="visually-hidden" for="classSelect">Class</label>
-      <select id="classSelect"></select>
       <button type="button" id="navLesson" class="nav">Lesson</button>
-      <button type="button" id="navManage" class="nav">Classes &amp; tablets</button>
+      <button type="button" id="navTablets" class="nav">Tablets</button>
       <button type="button" id="logoutBtn" class="quiet">Log out</button>
     </div>
   </header>
@@ -30,14 +28,12 @@
     </form>
   </main>
 
-  <!-- Lesson dashboard -->
+  <!-- Lesson -->
   <main id="lessonView" class="view" hidden>
-    <p id="noClasses" class="panel empty" hidden>
-      No classes yet. Go to <strong>Classes &amp; tablets</strong> to create one.
-    </p>
-
     <section id="startPanel" class="panel" hidden>
       <h2>Start a lesson</h2>
+      <label for="lessonTitle">Lesson name</label>
+      <input id="lessonTitle" class="wide" placeholder="e.g. S2 Computing – Room 12" maxlength="60">
       <p class="hint">Choose the sites that count as <strong>on task</strong>. Any link you send is added automatically.</p>
       <div class="presets" id="presetList"></div>
       <div class="inline-form">
@@ -47,19 +43,32 @@
       </div>
       <div class="chips" id="startChips"></div>
       <button type="button" id="startLessonBtn" class="primary big">Start lesson</button>
+      <div id="runningList" hidden>
+        <h3>Lessons already running</h3>
+        <div class="class-list" id="runningButtons"></div>
+      </div>
     </section>
 
     <section id="runningPanel" hidden>
-      <div class="lesson-bar panel">
-        <div class="summary" id="summary" aria-live="polite"></div>
-        <button type="button" id="endLessonBtn" class="danger">End lesson</button>
+      <div class="lesson-head">
+        <div class="panel join-panel">
+          <div class="join-label">Join code</div>
+          <div class="join-code" id="joinCode"></div>
+          <div class="hint">Open <strong>Classroom Hub</strong> on your tablet, type this code and your name (e.g. Amy K).</div>
+        </div>
+        <div class="panel lesson-info">
+          <h2 id="lessonTitleShown"></h2>
+          <div class="summary" id="summary" aria-live="polite"></div>
+          <p class="hint" id="lessonTimes"></p>
+          <button type="button" id="endLessonBtn" class="danger">End lesson</button>
+        </div>
       </div>
 
       <div class="panel send-bar">
         <form id="linkForm" class="inline-form">
           <label class="visually-hidden" for="linkInput">Web link to send</label>
           <input id="linkInput" placeholder="Paste a link to send, e.g. bbc.co.uk/bitesize" autocomplete="off">
-          <button type="submit" class="primary" id="sendAllBtn">Send to whole class</button>
+          <button type="submit" class="primary" id="sendAllBtn">Send to everyone</button>
           <button type="button" id="sendSelectedBtn" disabled>Send to selected (0)</button>
         </form>
         <p class="error" id="linkError" role="alert"></p>
@@ -73,51 +82,49 @@
           </form>
         </div>
       </div>
+
+      <div class="panel action-bar" id="actionBar" hidden>
+        <span id="selectedCount"></span>
+        <button type="button" id="renameBtn">Ask to retype name</button>
+        <button type="button" id="removeBtn" class="danger">Remove from lesson</button>
+        <button type="button" id="clearSelBtn" class="quiet">Clear selection</button>
+      </div>
     </section>
 
     <section class="grid" id="pupilGrid" aria-label="Pupils"></section>
-    <p class="hint" id="selectionHint" hidden>Tip: tap pupil cards to select them, then use “Send to selected”.</p>
+    <p class="hint" id="selectionHint" hidden>Tip: tap pupil cards to select them, then send a link or use the actions above.</p>
+
+    <section class="panel unjoined" id="unjoinedPanel" hidden>
+      <h3>Tablets switched on but not in any lesson</h3>
+      <div class="chips" id="unjoinedChips"></div>
+      <p class="hint">If a pupil in your room has one of these tablets, they haven't joined yet.</p>
+    </section>
   </main>
 
-  <!-- Manage classes and tablets -->
-  <main id="manageView" class="view" hidden>
+  <!-- Tablets -->
+  <main id="tabletsView" class="view" hidden>
     <section class="panel">
-      <h2>Classes</h2>
-      <form id="newClassForm" class="inline-form">
-        <label class="visually-hidden" for="newClassName">New class name</label>
-        <input id="newClassName" placeholder="New class name, e.g. S2 Computing" required>
-        <button type="submit" class="primary">Create class</button>
-      </form>
-    </section>
-
-    <section class="panel" id="classDetail" hidden>
-      <h2 id="classDetailTitle"></h2>
-      <form id="addPupilsForm">
-        <label for="pupilNames">Add pupils (one name per line)</label>
-        <textarea id="pupilNames" rows="4" placeholder="Use first name + initial, e.g. Amy K"></textarea>
-        <button type="submit">Add pupils</button>
-      </form>
-      <table class="pupil-table">
-        <thead><tr><th>Pupil</th><th>Tablet</th><th>Actions</th></tr></thead>
-        <tbody id="pupilRows"></tbody>
-      </table>
-      <button type="button" id="deleteClassBtn" class="danger quiet">Delete this class</button>
-    </section>
-
-    <section class="panel hint">
-      <h2>Setting up a tablet</h2>
-      <ol>
+      <h2>Set up tablets</h2>
+      <ol class="hint">
         <li>Install the Classroom Hub app on the tablet (see the README).</li>
-        <li>Press <strong>Get setup code</strong> next to the pupil above.</li>
-        <li>On the tablet, enter the hub address and the code, then follow the on-screen permission steps.</li>
+        <li>Press <strong>Get setup code</strong>. One code can set up many tablets today.</li>
+        <li>On the tablet, enter the hub address, the setup code and the <strong>number on the tablet's sticker</strong>, then follow the permission steps.</li>
       </ol>
+      <button type="button" id="setupCodeBtn" class="primary">Get setup code</button>
+    </section>
+    <section class="panel">
+      <h2>Tablets</h2>
+      <table class="pupil-table">
+        <thead><tr><th>Tablet</th><th>Status</th><th>Last seen</th><th></th></tr></thead>
+        <tbody id="tabletRows"></tbody>
+      </table>
     </section>
   </main>
 
   <dialog id="codeDialog">
-    <h2>Setup code for <span id="codeName"></span></h2>
+    <h2>Tablet setup code</h2>
     <p class="code" id="codeValue"></p>
-    <p class="hint">Hub address: <strong id="codeServer"></strong><br>The code works once and expires in 7 days.</p>
+    <p class="hint">Hub address: <strong id="codeServer"></strong><br>Valid for 24 hours, for any number of tablets.</p>
     <form method="dialog"><button class="primary">Done</button></form>
   </dialog>
 </body>

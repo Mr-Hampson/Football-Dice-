@@ -1,23 +1,22 @@
-// Persistent storage for the things that must survive a restart:
-// classes, pupils, paired tablets and one-time pairing codes.
+// Persistent storage for the only thing that must survive a restart:
+// the school's enrolled tablets (their number and a hash of their secret).
 //
-// Deliberately NOT stored here: what pupils are doing. Activity is kept in
-// memory only (see hub.js) and disappears when a lesson ends or the server
-// restarts. This is "data minimisation" by design and should make the DPIA
-// simpler. Change this only after agreeing it with the Data Protection Officer.
+// Deliberately NOT stored: pupil names, lessons or what pupils are doing.
+// Those live in memory only (see hub.js) and vanish when the lesson ends.
+// This is "data minimisation" by design. Change it only after agreeing
+// with the Data Protection Officer.
 //
-// Storage is a single JSON file. That is fine for a one-school prototype and
-// easy to inspect; swap for a real database (e.g. PostgreSQL) before scaling.
+// Storage is a single JSON file, which is fine for a one-school prototype.
 
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 
-const EMPTY = { pupils: [], classes: [], devices: [], pairingCodes: [] };
+const EMPTY = { tablets: [], setupCodes: [] };
 
-// Pairing codes avoid characters that are easy to confuse (0/O, 1/I/L).
-const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
-const PAIRING_CODE_TTL_MS = 7 * 24 * 60 * 60 * 1000; // one week
+// Codes avoid characters that are easy to confuse (0/O, 1/I/L).
+export const CODE_ALPHABET = 'ABCDEFGHJKMNPQRSTUVWXYZ23456789';
+const SETUP_CODE_TTL_MS = 24 * 60 * 60 * 1000; // one day
 
 export function newId() {
   return crypto.randomBytes(8).toString('hex');
@@ -27,10 +26,22 @@ export function hashToken(token) {
   return crypto.createHash('sha256').update(token).digest('hex');
 }
 
-function newPairingCode() {
+export function randomCode(length) {
   let code = '';
-  for (let i = 0; i < 6; i++) code += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
+  for (let i = 0; i < length; i++) code += CODE_ALPHABET[crypto.randomInt(CODE_ALPHABET.length)];
   return code;
+}
+
+export function normaliseCode(input) {
+  return String(input || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
+}
+
+// Tablet labels as written on the sticker: "7", "07", "A12", "T-3".
+// Leading zeros are dropped from plain numbers so "07" and "7" are the same tablet.
+export function normaliseTabletNumber(input) {
+  let s = String(input ?? '').trim().toUpperCase().replace(/\s+/g, '');
+  if (/^\d+$/.test(s)) s = String(Number(s));
+  return /^[A-Z0-9-]{1,8}$/.test(s) ? s : null;
 }
 
 export class Store {
@@ -38,12 +49,13 @@ export class Store {
     this.filePath = filePath;
     this.data = structuredClone(EMPTY);
     if (filePath && fs.existsSync(filePath)) {
-      this.data = { ...structuredClone(EMPTY), ...JSON.parse(fs.readFileSync(filePath, 'utf8')) };
+      const loaded = JSON.parse(fs.readFileSync(filePath, 'utf8'));
+      this.data = { tablets: loaded.tablets || [], setupCodes: loaded.setupCodes || [] };
     }
   }
 
   save() {
-    if (!this.filePath) return; // in-memory mode (used by tests)
+    if (!this.filePath) return; // in-memory mode (tests)
     fs.mkdirSync(path.dirname(this.filePath), { recursive: true });
     // Write to a temp file then rename, so a crash never leaves a half-written file.
     const tmp = `${this.filePath}.tmp`;
@@ -51,111 +63,59 @@ export class Store {
     fs.renameSync(tmp, this.filePath);
   }
 
-  // ---- Classes and pupils -------------------------------------------------
+  // ---- Setup codes ----------------------------------------------------------
 
-  listClasses() {
-    return this.data.classes.map((c) => ({ ...c, pupilCount: c.pupilIds.length }));
-  }
-
-  getClass(classId) {
-    return this.data.classes.find((c) => c.id === classId) || null;
-  }
-
-  createClass(name) {
-    const cls = { id: newId(), name: String(name).trim().slice(0, 80), pupilIds: [] };
-    if (!cls.name) throw new Error('Class name is required');
-    this.data.classes.push(cls);
-    this.save();
-    return cls;
-  }
-
-  deleteClass(classId) {
-    this.data.classes = this.data.classes.filter((c) => c.id !== classId);
-    this.save();
-  }
-
-  getPupil(pupilId) {
-    return this.data.pupils.find((p) => p.id === pupilId) || null;
-  }
-
-  // Adds pupils to a class from a list of names. A name that already exists
-  // (case-insensitive) is reused, so the same pupil can be in several classes.
-  addPupilsToClass(classId, names) {
-    const cls = this.getClass(classId);
-    if (!cls) throw new Error('Class not found');
-    const added = [];
-    for (const raw of names) {
-      const name = String(raw).trim().slice(0, 80);
-      if (!name) continue;
-      let pupil = this.data.pupils.find((p) => p.name.toLowerCase() === name.toLowerCase());
-      if (!pupil) {
-        pupil = { id: newId(), name };
-        this.data.pupils.push(pupil);
-      }
-      if (!cls.pupilIds.includes(pupil.id)) cls.pupilIds.push(pupil.id);
-      added.push(pupil);
-    }
-    this.save();
-    return added;
-  }
-
-  removePupilFromClass(classId, pupilId) {
-    const cls = this.getClass(classId);
-    if (!cls) return;
-    cls.pupilIds = cls.pupilIds.filter((id) => id !== pupilId);
-    this.save();
-  }
-
-  classIdsForPupil(pupilId) {
-    return this.data.classes.filter((c) => c.pupilIds.includes(pupilId)).map((c) => c.id);
-  }
-
-  // ---- Tablets ------------------------------------------------------------
-
-  isPupilPaired(pupilId) {
-    return this.data.devices.some((d) => d.pupilId === pupilId);
-  }
-
-  // Creates a one-time code a pupil types into their tablet once.
-  // Any older unused code for the same pupil is replaced.
-  createPairingCode(pupilId) {
-    if (!this.getPupil(pupilId)) throw new Error('Pupil not found');
-    this.data.pairingCodes = this.data.pairingCodes.filter((c) => c.pupilId !== pupilId);
-    let code;
-    do code = newPairingCode();
-    while (this.data.pairingCodes.some((c) => c.code === code));
-    const entry = { code, pupilId, expiresAt: Date.now() + PAIRING_CODE_TTL_MS };
-    this.data.pairingCodes.push(entry);
+  // A setup code can be used for many tablets during one day, so IT can set
+  // up a whole trolley with one code.
+  createSetupCode() {
+    const now = Date.now();
+    this.data.setupCodes = this.data.setupCodes.filter((c) => c.expiresAt > now);
+    const entry = { code: randomCode(8), expiresAt: now + SETUP_CODE_TTL_MS };
+    this.data.setupCodes.push(entry);
     this.save();
     return entry;
   }
 
-  // Exchanges a pairing code for a long-lived device token.
-  // Only a hash of the token is stored, so a leaked data file cannot be
-  // used to impersonate tablets. Pairing a new tablet replaces the old one.
-  redeemPairingCode(code) {
-    const normalised = String(code || '').toUpperCase().replace(/[^A-Z0-9]/g, '');
-    const now = Date.now();
-    this.data.pairingCodes = this.data.pairingCodes.filter((c) => c.expiresAt > now);
-    const entry = this.data.pairingCodes.find((c) => c.code === normalised);
-    if (!entry) return null;
-    this.data.pairingCodes = this.data.pairingCodes.filter((c) => c !== entry);
-    const token = crypto.randomBytes(32).toString('base64url');
-    this.data.devices = this.data.devices.filter((d) => d.pupilId !== entry.pupilId);
-    this.data.devices.push({ tokenHash: hashToken(token), pupilId: entry.pupilId, pairedAt: now });
-    this.save();
-    return { token, pupil: this.getPupil(entry.pupilId) };
+  isValidSetupCode(code) {
+    const c = normaliseCode(code);
+    return this.data.setupCodes.some((s) => s.code === c && s.expiresAt > Date.now());
   }
 
-  pupilForDeviceToken(token) {
+  // ---- Tablets --------------------------------------------------------------
+
+  listTablets() {
+    return [...this.data.tablets].sort((a, b) =>
+      a.number.localeCompare(b.number, undefined, { numeric: true }));
+  }
+
+  getTablet(id) {
+    return this.data.tablets.find((t) => t.id === id) || null;
+  }
+
+  // Enrols a tablet. Re-using a number replaces the old tablet with that
+  // number (e.g. after a factory reset). Returns the tablet's secret token,
+  // which is shown to the tablet once; only its hash is kept.
+  enrolTablet(setupCode, numberInput) {
+    if (!this.isValidSetupCode(setupCode)) return { error: 'Setup code not recognised or expired' };
+    const number = normaliseTabletNumber(numberInput);
+    if (!number) return { error: 'Enter the number on the tablet sticker (letters, numbers or -)' };
+    const replaced = this.data.tablets.find((t) => t.number === number) || null;
+    this.data.tablets = this.data.tablets.filter((t) => t.number !== number);
+    const token = crypto.randomBytes(32).toString('base64url');
+    const tablet = { id: newId(), number, tokenHash: hashToken(token), enrolledAt: Date.now() };
+    this.data.tablets.push(tablet);
+    this.save();
+    return { tablet, token, replaced };
+  }
+
+  tabletForToken(token) {
     if (!token) return null;
     const h = hashToken(token);
-    const device = this.data.devices.find((d) => d.tokenHash === h);
-    return device ? this.getPupil(device.pupilId) : null;
+    return this.data.tablets.find((t) => t.tokenHash === h) || null;
   }
 
-  unpairPupil(pupilId) {
-    this.data.devices = this.data.devices.filter((d) => d.pupilId !== pupilId);
+  removeTablet(id) {
+    this.data.tablets = this.data.tablets.filter((t) => t.id !== id);
     this.save();
   }
 }

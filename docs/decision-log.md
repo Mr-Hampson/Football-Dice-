@@ -3,7 +3,33 @@
 Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 **[Unverified]** to be tested · **[Rejected]**
 
-## v0.3 – prototype built (current)
+## v0.4 – shared tablets and join codes (current)
+
+### Changed requirements (agreed)
+- **Tablets are shared, not individual** [Confirmed]. They are **numbered**, and pupils don't use the same one each time. *Supersedes the v0.3 "individual tablets" requirement.*
+- **Several lessons can run at the same time** in different rooms [Confirmed].
+
+### New decisions
+| Decision | Reason |
+|---|---|
+| Each tablet is set up once with its **number** (from its sticker) and a school setup code | The hub needs a stable identity for every tablet, so unjoined tablets can be seen |
+| Pupils join each lesson with a **4-character join code** shown on the dashboard, plus their name | Works with simultaneous lessons; a familiar pattern (like Kahoot); avoids joining the wrong lesson |
+| Pupils type **first name + surname initial** (e.g. "Amy K") | Enough to tell pupils apart; minimal personal data |
+| **No class lists or pupil names stored** on the server; names exist only for the lesson | Less admin, less personal data |
+| The teacher can **ask a pupil to retype their name** or **remove** them from the lesson | Handles typos and silly names |
+| Duplicate names are flagged; **connected tablets not in any lesson are listed by number** | A pupil who never joins would otherwise be invisible |
+| Lessons end automatically after 2 hours (configurable) | In case the teacher forgets to end the lesson |
+| Pupils have no "leave lesson" button | Leaving would be an easy way to escape monitoring; the teacher removes them, or the lesson ends |
+
+### New risks
+- A pupil can type someone else's name. Mitigation: the teacher can see tablet numbers and ask for a retype.
+- Shared Amazon account: logins and history in Silk carry over between pupils. **Needs a school policy** (sign out at the end of a lesson), and should be mentioned in the DPIA.
+
+### Superseded from v0.3
+- "Tablet identity: one-time setup code per pupil → permanent device token" is replaced by a per-tablet identity plus per-lesson join.
+- Class and pupil management in the dashboard has been removed.
+
+## v0.3 – prototype built
 
 ### Confirmed requirements
 - Pupils have **individual** Fire tablets, which **stay in school**. Each is signed into a **school Amazon account**.
@@ -68,3 +94,4 @@ usage reports, file sending, teacher messages, and DNS-based website fallback.
 - **v0.1**: initial assessment; Option A (web dashboard + pupil app) recommended, subject to a feasibility test.
 - **v0.2**: requirement changed to on-task / off-task; four dashboard states; status worked out on the tablet.
 - **v0.3**: tablets confirmed in-school only, on a school Amazon account and public Wi-Fi. Network-log option rejected. Prototype built.
+- **v0.4**: tablets confirmed shared and numbered, with simultaneous lessons. Changed to per-tablet identity, join codes and typed names.

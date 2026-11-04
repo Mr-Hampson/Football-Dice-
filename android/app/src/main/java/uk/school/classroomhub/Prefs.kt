@@ -2,7 +2,10 @@ package uk.school.classroomhub
 
 import android.content.Context
 
-/** Small wrapper around the app's saved settings. */
+/**
+ * The app's saved settings. Only the tablet's own identity is saved:
+ * pupil names are never stored on the tablet.
+ */
 class Prefs(context: Context) {
     private val sp = context.getSharedPreferences("hub", Context.MODE_PRIVATE)
 
@@ -14,14 +17,15 @@ class Prefs(context: Context) {
         get() = sp.getString("token", null)
         set(value) = sp.edit().putString("token", value).apply()
 
-    var pupilName: String?
-        get() = sp.getString("pupilName", null)
-        set(value) = sp.edit().putString("pupilName", value).apply()
+    /** The number on the tablet's sticker, e.g. "7". */
+    var tabletNumber: String?
+        get() = sp.getString("tabletNumber", null)
+        set(value) = sp.edit().putString("tabletNumber", value).apply()
 
-    val isPaired: Boolean
+    val isSetUp: Boolean
         get() = !serverUrl.isNullOrBlank() && !token.isNullOrBlank()
 
     fun forget() {
-        sp.edit().remove("token").remove("pupilName").apply()
+        sp.edit().remove("token").apply()
     }
 }

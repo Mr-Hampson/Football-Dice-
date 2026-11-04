@@ -1,11 +1,12 @@
-// Pretend to be a classroom of Fire tablets, so the dashboard can be tried
+// Pretend to be a trolley of Fire tablets, so the dashboard can be tried
 // without real devices.
 //
-//   TEACHER_PASSWORD=... node tools/simulate-tablets.js [hubUrl] [pupilCount]
+//   TEACHER_PASSWORD=... node tools/simulate-tablets.js [hubUrl] [tabletCount]
 //
-// It creates a class called "Demo class" (if missing), sets up fake tablets
-// for its pupils, then reports made-up activity using the same on-task rules
-// as the real Android app.
+// It sets up tablets numbered 1..N, waits for a lesson to be started on the
+// dashboard, then most tablets "join" with made-up pupil names (one is a
+// duplicate; two never join) and report activity using the same on-task
+// rules as the real Android app.
 
 import WebSocket from 'ws';
 
@@ -18,8 +19,9 @@ if (!password) {
 }
 
 const NAMES = ['Amy K', 'Ben M', 'Callum R', 'Chloe S', 'Daniel W', 'Ella T', 'Finlay G', 'Freya B', 'Grace H', 'Harris D',
-  'Isla P', 'Jack F', 'Kai L', 'Lily C', 'Lewis N', 'Mia O', 'Noah J', 'Olivia A', 'Rory E', 'Sophie V', 'Struan Q',
+  'Isla P', 'Jack F', 'Kai L', 'Lily C', 'Lewis N', 'Mia O', 'Noah J', 'Olivia A', 'Rory E', 'Sophie V', 'Amy K',
   'Ava Y', 'Leo Z', 'Ruby X', 'Zara U', 'Euan I', 'Millie R', 'Archie T', 'Eilidh M', 'Lucas S'];
+const NEVER_JOIN = 2;
 
 // Things a pupil might be doing. "domain" means they are in Silk on that site.
 const ACTIVITIES = [
@@ -49,9 +51,7 @@ function classify(activity, lesson) {
     if (!activity.domain) return { state: 'unknown', appLabel: 'Silk', detail: "Silk – couldn't read the website" };
     const host = activity.domain.replace(/^www\./, '');
     const matched = lesson.allowedDomains.find((a) => host === a || host.endsWith(`.${a}`));
-    return matched
-      ? { state: 'on', appLabel: 'Silk', matched }
-      : { state: 'off', appLabel: 'Silk', domain: host };
+    return matched ? { state: 'on', appLabel: 'Silk', matched } : { state: 'off', appLabel: 'Silk', domain: host };
   }
   return { state: 'off', appLabel: activity.label, appPackage: activity.pkg };
 }
@@ -67,18 +67,15 @@ async function api(method, path, body, cookie) {
   return { data, res };
 }
 
-function simulateTablet(token, name) {
+function simulateTablet(token, number, name, getJoinCode) {
   let lesson = null;
   let activity = pick();
   let ws;
+  const send = (m) => ws && ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
 
   const report = () => {
-    if (!ws || ws.readyState !== WebSocket.OPEN) return;
     const c = classify(activity, lesson);
-    ws.send(JSON.stringify({
-      type: 'status', screenOn: true, ...c, perms: { usage: true, website: true },
-      battery: 40 + Math.round(Math.random() * 60), appVersion: 'sim',
-    }));
+    send({ type: 'status', screenOn: true, ...c, perms: { usage: true, website: true }, battery: 40 + Math.round(Math.random() * 60), appVersion: 'sim' });
   };
 
   const open = () => {
@@ -87,12 +84,16 @@ function simulateTablet(token, name) {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'lesson') {
         lesson = msg;
+        if (msg.active && msg.nameRequested) {
+          // The pupil fixes their name after a few seconds.
+          setTimeout(() => send({ type: 'rename', name: `${name.split(' ')[0]} ${String.fromCharCode(65 + number % 26)}` }), 4000);
+        }
         report();
       } else if (msg.type === 'link') {
-        ws.send(JSON.stringify({ type: 'linkAck', id: msg.id, stage: 'delivered' }));
+        send({ type: 'linkAck', id: msg.id, stage: 'delivered' });
         if (Math.random() < 0.8) {
           setTimeout(() => {
-            ws.send(JSON.stringify({ type: 'linkAck', id: msg.id, stage: 'opened' }));
+            send({ type: 'linkAck', id: msg.id, stage: 'opened' });
             activity = { pkg: 'com.amazon.cloud9', label: 'Silk', domain: new URL(msg.url).hostname, weight: 0 };
             report();
           }, 2000 + Math.random() * 10000);
@@ -104,28 +105,33 @@ function simulateTablet(token, name) {
   };
   open();
 
-  // Every so often the pupil switches to something else.
   setInterval(() => {
+    // Not in a lesson? Join if the teacher has started one (some pupils never do).
+    if (name && (!lesson || !lesson.active)) {
+      const code = getJoinCode();
+      if (code && Math.random() < 0.4) send({ type: 'join', code, name });
+      return;
+    }
     if (Math.random() < 0.15) activity = pick();
     report();
-  }, 5000 + Math.random() * 5000);
-  console.log(`  tablet for ${name} running`);
+  }, 3000 + Math.random() * 4000);
 }
 
 const { res } = await api('POST', '/api/login', { password });
 const cookie = res.headers.get('set-cookie').split(';')[0];
+const { data: { code: setupCode } } = await api('POST', '/api/tablets/setup-code', null, cookie);
 
-const { data: { classes } } = await api('GET', '/api/classes', null, cookie);
-let cls = classes.find((c) => c.name === 'Demo class');
-if (!cls) {
-  cls = (await api('POST', '/api/classes', { name: 'Demo class' }, cookie)).data;
-  await api('POST', `/api/classes/${cls.id}/pupils`, { names: NAMES.slice(0, count).join('\n') }, cookie);
-}
-const { data: { pupils } } = await api('GET', `/api/classes/${cls.id}/pupils`, null, cookie);
+// Watch for a running lesson so the pretend pupils know the join code.
+let joinCode = null;
+setInterval(async () => {
+  try {
+    const { data: { lessons } } = await api('GET', '/api/lessons', null, cookie);
+    joinCode = lessons.length ? lessons[lessons.length - 1].joinCode : null;
+  } catch { /* hub restarting */ }
+}, 2000);
 
-console.log(`Simulating ${pupils.length - 2} tablets for "Demo class" (2 pupils left without a tablet)...`);
-for (const pupil of pupils.slice(0, pupils.length - 2)) {
-  const { data: { code } } = await api('POST', `/api/pupils/${pupil.id}/pairing-code`, null, cookie);
-  const { data: { token } } = await api('POST', '/api/device/pair', { code });
-  simulateTablet(token, pupil.name);
+console.log(`Setting up ${count} tablets. Start a lesson on the dashboard and they will join (${NEVER_JOIN} never will).`);
+for (let i = 1; i <= count; i++) {
+  const { data: { token } } = await api('POST', '/api/device/enrol', { code: setupCode, number: String(i) });
+  simulateTablet(token, i, i <= count - NEVER_JOIN ? NAMES[(i - 1) % NAMES.length] : null, () => joinCode);
 }

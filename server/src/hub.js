@@ -1,16 +1,21 @@
-// The "live" part of the system: which tablets are connected, what lesson is
-// running, which links have been sent, and pushing updates to dashboards.
+// The "live" part of the system: running lessons, which tablets are
+// connected, who has joined which lesson, links sent, and pushing updates to
+// teacher dashboards.
 //
-// Everything in this file lives in memory only. When a lesson ends its links
-// and pupil activity are forgotten. Nothing about what pupils were doing is
+// Everything in this file lives in memory only. When a lesson ends, its
+// pupil names, links and activity are forgotten. Nothing about pupils is
 // written to disk.
 
 import crypto from 'node:crypto';
+import { randomCode, normaliseCode } from './store.js';
+import { normalisePupilName, NAME_RULE } from './names.js';
 import { domainMatches, normaliseDomain, normaliseDomainList, normalisePackageList, normaliseLink } from './domains.js';
 
-// A tablet sends a status report every ~15 s. If we hear nothing for this
-// long we treat it as disconnected (Wi-Fi lost, asleep, app killed...).
+// A tablet reports every ~15 s at least. Silence for this long = disconnected.
 export const DEVICE_TIMEOUT_MS = 45_000;
+const JOIN_CODE_LENGTH = 4;
+const MAX_JOIN_FAILURES = 10; // per tablet, per lesson-code guessing window
+const JOIN_FAILURE_WINDOW_MS = 10 * 60 * 1000;
 
 const DEVICE_STATES = new Set(['on', 'off', 'idle', 'unknown', 'paused']);
 const LINK_STAGES = ['sent', 'delivered', 'opened'];
@@ -20,110 +25,211 @@ function cleanString(value, max) {
 }
 
 export class Hub {
-  constructor(store, audit = () => {}) {
+  constructor(store, { audit = () => {}, lessonMaxMs = 2 * 60 * 60 * 1000 } = {}) {
     this.store = store;
     this.audit = audit;
-    this.lessons = new Map(); // classId -> lesson
-    this.devices = new Map(); // pupilId -> { ws, lastMessageAt }
-    this.live = new Map(); // pupilId -> latest report from the tablet
-    this.lastSeen = new Map(); // pupilId -> timestamp (memory only)
-    this.teachers = new Set(); // { ws, classId }
+    this.lessonMaxMs = lessonMaxMs;
+    this.lessons = new Map(); // lessonId -> lesson
+    this.devices = new Map(); // tabletId -> { ws, lastMessageAt }
+    this.lastSeen = new Map(); // tabletId -> timestamp (memory only)
+    this.live = new Map(); // tabletId -> latest status report
+    this.tabletLesson = new Map(); // tabletId -> lessonId
+    this.joinFailures = new Map(); // tabletId -> { count, resetAt }
+    this.teachers = new Set(); // { ws, lessonId }
     this.pendingBroadcast = new Set();
     this.broadcastTimer = null;
   }
 
-  // ---- Lessons -----------------------------------------------------------
+  // ---- Lessons ---------------------------------------------------------------
 
-  startLesson(classId, { allowedDomains = [], allowedApps = [] } = {}) {
-    const cls = this.store.getClass(classId);
-    if (!cls) throw new Error('Class not found');
+  startLesson({ title = '', allowedDomains = [], allowedApps = [] } = {}) {
+    let joinCode;
+    do joinCode = randomCode(JOIN_CODE_LENGTH);
+    while ([...this.lessons.values()].some((l) => l.joinCode === joinCode));
+    const now = Date.now();
     const lesson = {
-      classId,
-      startedAt: Date.now(),
+      id: crypto.randomBytes(8).toString('hex'),
+      joinCode,
+      title: String(title).trim().slice(0, 60) || 'Lesson',
+      startedAt: now,
+      endsAt: now + this.lessonMaxMs,
       allowedDomains: normaliseDomainList(allowedDomains),
       allowedApps: normalisePackageList(allowedApps),
       links: [],
+      participants: new Map(), // tabletId -> { name, joinedAt, nameRequested }
     };
-    this.lessons.set(classId, lesson);
-    this.audit('lesson.start', { classId, className: cls.name, allowedDomains: lesson.allowedDomains });
-    this.pushLessonToClass(classId);
+    this.lessons.set(lesson.id, lesson);
+    this.audit('lesson.start', { lessonId: lesson.id, title: lesson.title, allowedDomains: lesson.allowedDomains });
+    this.broadcastAll(); // other dashboards' "running lessons" lists
     return lesson;
   }
 
-  endLesson(classId) {
-    if (!this.lessons.has(classId)) return;
-    this.lessons.delete(classId);
-    this.audit('lesson.end', { classId });
-    // Forget everything pupils in this class were doing.
-    const cls = this.store.getClass(classId);
-    for (const pupilId of cls ? cls.pupilIds : []) {
-      if (!this.lessonForPupil(pupilId)) this.live.delete(pupilId);
-    }
-    this.pushLessonToClass(classId);
+  getLesson(lessonId) {
+    const lesson = this.lessons.get(lessonId);
+    if (!lesson) throw Object.assign(new Error('That lesson has ended'), { status: 404 });
+    return lesson;
   }
 
-  updateAllowed(classId, { allowedDomains, allowedApps }) {
-    const lesson = this.lessons.get(classId);
-    if (!lesson) throw new Error('No lesson running');
+  listLessons() {
+    return [...this.lessons.values()].map((l) => ({
+      id: l.id,
+      title: l.title,
+      joinCode: l.joinCode,
+      startedAt: l.startedAt,
+      endsAt: l.endsAt,
+      pupilCount: l.participants.size,
+    }));
+  }
+
+  endLesson(lessonId, reason = 'teacher') {
+    const lesson = this.lessons.get(lessonId);
+    if (!lesson) return;
+    this.lessons.delete(lessonId);
+    this.audit('lesson.end', { lessonId, reason });
+    for (const tabletId of lesson.participants.keys()) {
+      this.tabletLesson.delete(tabletId);
+      this.live.delete(tabletId); // forget what they were doing
+      this.sendLessonState(tabletId);
+    }
+    this.broadcastAll();
+  }
+
+  endExpiredLessons(now = Date.now()) {
+    for (const lesson of [...this.lessons.values()]) {
+      if (now > lesson.endsAt) this.endLesson(lesson.id, 'time limit');
+    }
+  }
+
+  updateAllowed(lessonId, { allowedDomains, allowedApps }) {
+    const lesson = this.getLesson(lessonId);
     if (allowedDomains) lesson.allowedDomains = normaliseDomainList(allowedDomains);
     if (allowedApps) lesson.allowedApps = normalisePackageList(allowedApps);
-    this.audit('lesson.allowed', { classId, allowedDomains: lesson.allowedDomains, allowedApps: lesson.allowedApps });
-    this.pushLessonToClass(classId);
+    this.audit('lesson.allowed', { lessonId, allowedDomains: lesson.allowedDomains, allowedApps: lesson.allowedApps });
+    this.pushLessonToParticipants(lesson);
     return lesson;
   }
 
-  // If a pupil is in more than one running lesson, the most recent wins.
-  lessonForPupil(pupilId) {
-    let best = null;
-    for (const classId of this.store.classIdsForPupil(pupilId)) {
-      const lesson = this.lessons.get(classId);
-      if (lesson && (!best || lesson.startedAt > best.startedAt)) best = lesson;
-    }
-    return best;
+  pushLessonToParticipants(lesson) {
+    for (const tabletId of lesson.participants.keys()) this.sendLessonState(tabletId);
+    this.scheduleBroadcast(lesson.id);
   }
 
-  lessonMessageFor(pupilId) {
-    const lesson = this.lessonForPupil(pupilId);
-    if (!lesson) return { type: 'lesson', active: false };
-    const cls = this.store.getClass(lesson.classId);
-    return {
+  // ---- Joining ---------------------------------------------------------------
+
+  joinFailed(tabletId) {
+    const now = Date.now();
+    let entry = this.joinFailures.get(tabletId);
+    if (!entry || now > entry.resetAt) entry = { count: 0, resetAt: now + JOIN_FAILURE_WINDOW_MS };
+    entry.count += 1;
+    this.joinFailures.set(tabletId, entry);
+  }
+
+  joinBlocked(tabletId) {
+    const entry = this.joinFailures.get(tabletId);
+    return !!entry && Date.now() <= entry.resetAt && entry.count >= MAX_JOIN_FAILURES;
+  }
+
+  // A pupil types the join code and their name on a tablet.
+  join(tabletId, codeInput, nameInput) {
+    if (this.joinBlocked(tabletId)) return { error: 'Too many wrong codes. Wait a few minutes.' };
+    const code = normaliseCode(codeInput);
+    const lesson = [...this.lessons.values()].find((l) => l.joinCode === code);
+    if (!lesson) {
+      this.joinFailed(tabletId);
+      return { error: 'Join code not recognised. Check the code on the board.' };
+    }
+    const name = normalisePupilName(nameInput);
+    if (!name) return { error: NAME_RULE };
+
+    // Moving from another lesson? Leave it first.
+    const previous = this.tabletLesson.get(tabletId);
+    if (previous && previous !== lesson.id) this.removeFromLesson(previous, tabletId, false);
+
+    lesson.participants.set(tabletId, { name, joinedAt: Date.now(), nameRequested: false });
+    this.tabletLesson.set(tabletId, lesson.id);
+    this.live.delete(tabletId);
+    this.sendLessonState(tabletId);
+    this.deliverPendingLinks(tabletId);
+    this.broadcastAll(); // unjoined-tablet lists and pupil counts change
+    return { lesson, name };
+  }
+
+  // The pupil retyped their name after the teacher asked them to.
+  rename(tabletId, nameInput) {
+    const lesson = this.lessonForTablet(tabletId);
+    if (!lesson) return { error: 'Not in a lesson' };
+    const name = normalisePupilName(nameInput);
+    if (!name) return { error: NAME_RULE };
+    const p = lesson.participants.get(tabletId);
+    p.name = name;
+    p.nameRequested = false;
+    this.sendLessonState(tabletId);
+    this.scheduleBroadcast(lesson.id);
+    return { name };
+  }
+
+  requestRename(lessonId, tabletIds) {
+    const lesson = this.getLesson(lessonId);
+    for (const id of tabletIds || []) {
+      const p = lesson.participants.get(id);
+      if (!p) continue;
+      p.nameRequested = true;
+      this.sendLessonState(id);
+    }
+    this.scheduleBroadcast(lessonId);
+  }
+
+  removeFromLesson(lessonId, tabletId, notify = true) {
+    const lesson = this.lessons.get(lessonId);
+    if (!lesson || !lesson.participants.delete(tabletId)) return;
+    this.tabletLesson.delete(tabletId);
+    this.live.delete(tabletId);
+    if (notify) this.sendLessonState(tabletId);
+    this.broadcastAll();
+  }
+
+  removeMany(lessonId, tabletIds) {
+    this.getLesson(lessonId);
+    for (const id of tabletIds || []) this.removeFromLesson(lessonId, id);
+    this.audit('lesson.remove', { lessonId, count: (tabletIds || []).length });
+  }
+
+  lessonForTablet(tabletId) {
+    const lessonId = this.tabletLesson.get(tabletId);
+    return lessonId ? this.lessons.get(lessonId) || null : null;
+  }
+
+  // What the tablet needs to know: are we in a lesson, its rules, our name.
+  sendLessonState(tabletId) {
+    const lesson = this.lessonForTablet(tabletId);
+    if (!lesson) return this.sendToDevice(tabletId, { type: 'lesson', active: false });
+    const p = lesson.participants.get(tabletId);
+    this.sendToDevice(tabletId, {
       type: 'lesson',
       active: true,
-      className: cls ? cls.name : '',
+      title: lesson.title,
+      name: p.name,
+      nameRequested: p.nameRequested,
       allowedDomains: lesson.allowedDomains,
       allowedApps: lesson.allowedApps,
-    };
+    });
   }
 
-  pushLessonToClass(classId) {
-    const cls = this.store.getClass(classId);
-    if (!cls) return;
-    for (const pupilId of cls.pupilIds) {
-      this.sendToDevice(pupilId, this.lessonMessageFor(pupilId));
-      this.deliverPendingLinks(pupilId);
-    }
-    this.scheduleBroadcast(classId);
-  }
+  // ---- Links -----------------------------------------------------------------
 
-  // ---- Links -------------------------------------------------------------
-
-  // Sends a link to some or all pupils in a class. The link's site is added
-  // to the allowed list automatically, so opening it counts as "on task".
-  sendLink(classId, { url, pupilIds }) {
-    const lesson = this.lessons.get(classId);
-    if (!lesson) throw new Error('Start a lesson before sending links');
-    const cls = this.store.getClass(classId);
+  // Sends a link to some or all pupils in a lesson. Its site is added to the
+  // allowed list automatically, so opening it counts as "on task".
+  sendLink(lessonId, { url, tabletIds }) {
+    const lesson = this.getLesson(lessonId);
     const clean = normaliseLink(url);
     if (!clean) throw new Error('That does not look like a web address');
-    const targets = Array.isArray(pupilIds) && pupilIds.length
-      ? pupilIds.filter((id) => cls.pupilIds.includes(id))
-      : [...cls.pupilIds];
-    if (!targets.length) throw new Error('No pupils selected');
+    const targets = Array.isArray(tabletIds) && tabletIds.length
+      ? tabletIds.filter((id) => lesson.participants.has(id))
+      : [...lesson.participants.keys()];
+    if (!targets.length) throw new Error('No pupils have joined yet');
 
     const domain = normaliseDomain(new URL(clean).hostname);
-    if (domain && !domainMatches(domain, lesson.allowedDomains)) {
-      lesson.allowedDomains.push(domain);
-    }
+    if (domain && !domainMatches(domain, lesson.allowedDomains)) lesson.allowedDomains.push(domain);
 
     const link = {
       id: crypto.randomBytes(6).toString('hex'),
@@ -132,41 +238,41 @@ export class Hub {
       targets: Object.fromEntries(targets.map((id) => [id, 'sent'])),
     };
     lesson.links.push(link);
-    this.audit('link.send', { classId, url: clean, pupilCount: targets.length });
-
-    this.pushLessonToClass(classId); // pushes new allowed list + the link itself
+    this.audit('link.send', { lessonId, url: clean, pupilCount: targets.length });
+    this.pushLessonToParticipants(lesson); // new allowed list
+    for (const id of targets) this.deliverPendingLinks(id);
     return link;
   }
 
-  deliverPendingLinks(pupilId) {
-    const lesson = this.lessonForPupil(pupilId);
-    if (!lesson || !this.devices.has(pupilId)) return;
+  deliverPendingLinks(tabletId) {
+    const lesson = this.lessonForTablet(tabletId);
+    if (!lesson || !this.devices.has(tabletId)) return;
     for (const link of lesson.links) {
-      if (link.targets[pupilId] === 'sent') {
-        this.sendToDevice(pupilId, { type: 'link', id: link.id, url: link.url });
+      if (link.targets[tabletId] === 'sent') {
+        this.sendToDevice(tabletId, { type: 'link', id: link.id, url: link.url });
       }
     }
   }
 
-  recordLinkAck(pupilId, linkId, stage) {
+  recordLinkAck(tabletId, linkId, stage) {
     if (!LINK_STAGES.includes(stage)) return;
-    const lesson = this.lessonForPupil(pupilId);
+    const lesson = this.lessonForTablet(tabletId);
     const link = lesson && lesson.links.find((l) => l.id === linkId);
-    if (!link || !(pupilId in link.targets)) return;
+    if (!link || !(tabletId in link.targets)) return;
     // Stages only move forward: sent -> delivered -> opened.
-    if (LINK_STAGES.indexOf(stage) > LINK_STAGES.indexOf(link.targets[pupilId])) {
-      link.targets[pupilId] = stage;
-      this.scheduleBroadcastForPupil(pupilId);
+    if (LINK_STAGES.indexOf(stage) > LINK_STAGES.indexOf(link.targets[tabletId])) {
+      link.targets[tabletId] = stage;
+      this.scheduleBroadcast(lesson.id);
     }
   }
 
-  // ---- Tablets -----------------------------------------------------------
+  // ---- Tablets ---------------------------------------------------------------
 
-  attachDevice(pupil, ws) {
-    const existing = this.devices.get(pupil.id);
+  attachDevice(tablet, ws) {
+    const existing = this.devices.get(tablet.id);
     if (existing && existing.ws !== ws) existing.ws.close(4000, 'Replaced by a newer connection');
-    this.devices.set(pupil.id, { ws, lastMessageAt: Date.now() });
-    this.lastSeen.set(pupil.id, Date.now());
+    this.devices.set(tablet.id, { ws, lastMessageAt: Date.now() });
+    this.lastSeen.set(tablet.id, Date.now());
 
     ws.on('message', (raw) => {
       let msg;
@@ -175,77 +281,132 @@ export class Hub {
       } catch {
         return;
       }
-      this.handleDeviceMessage(pupil.id, msg);
+      this.handleDeviceMessage(tablet.id, msg);
     });
     ws.on('close', () => {
-      const current = this.devices.get(pupil.id);
+      const current = this.devices.get(tablet.id);
       if (current && current.ws === ws) {
-        this.devices.delete(pupil.id);
-        this.scheduleBroadcastForPupil(pupil.id);
+        this.devices.delete(tablet.id);
+        this.broadcastAll();
       }
     });
 
-    this.sendToDevice(pupil.id, { type: 'welcome', pupilName: pupil.name, serverTime: Date.now() });
-    this.sendToDevice(pupil.id, this.lessonMessageFor(pupil.id));
-    this.deliverPendingLinks(pupil.id);
-    this.scheduleBroadcastForPupil(pupil.id);
+    this.sendToDevice(tablet.id, { type: 'welcome', tabletNumber: tablet.number, serverTime: Date.now() });
+    this.sendLessonState(tablet.id);
+    this.deliverPendingLinks(tablet.id);
+    this.broadcastAll();
   }
 
-  handleDeviceMessage(pupilId, msg) {
-    const device = this.devices.get(pupilId);
+  // Called when a tablet is removed on the Tablets page.
+  forgetTablet(tabletId) {
+    const lessonId = this.tabletLesson.get(tabletId);
+    if (lessonId) this.removeFromLesson(lessonId, tabletId, false);
+    const device = this.devices.get(tabletId);
+    if (device) device.ws.close(4001, 'Tablet removed');
+    this.devices.delete(tabletId);
+    this.broadcastAll();
+  }
+
+  handleDeviceMessage(tabletId, msg) {
+    const device = this.devices.get(tabletId);
     if (device) device.lastMessageAt = Date.now();
-    this.lastSeen.set(pupilId, Date.now());
+    this.lastSeen.set(tabletId, Date.now());
     if (!msg || typeof msg !== 'object') return;
 
-    if (msg.type === 'status') {
-      const lesson = this.lessonForPupil(pupilId);
-      const report = {
-        state: DEVICE_STATES.has(msg.state) ? msg.state : 'unknown',
-        screenOn: msg.screenOn !== false,
-        appLabel: cleanString(msg.appLabel, 60),
-        // Package name only when off task, so the teacher can "allow this app".
-        appPackage: msg.state === 'off' ? normalisePackageList([msg.appPackage])[0] || null : null,
-        // The tablet only sends a domain when the pupil is off task.
-        domain: msg.state === 'off' ? normaliseDomain(msg.domain || '') : null,
-        matched: cleanString(msg.matched, 120),
-        detail: cleanString(msg.detail, 120),
-        perms: {
-          usage: !!(msg.perms && msg.perms.usage),
-          website: !!(msg.perms && msg.perms.website),
-        },
-        battery: Number.isFinite(msg.battery) ? Math.max(0, Math.min(100, Math.round(msg.battery))) : null,
-        appVersion: cleanString(msg.appVersion, 20),
-        at: Date.now(),
-      };
-      // Outside a lesson we keep nothing but "connected".
-      if (lesson) this.live.set(pupilId, report);
-      else this.live.set(pupilId, { ...report, state: 'paused', appLabel: null, appPackage: null, domain: null, matched: null, detail: null });
-      this.scheduleBroadcastForPupil(pupilId);
-    } else if (msg.type === 'linkAck') {
-      this.recordLinkAck(pupilId, cleanString(msg.id, 40), msg.stage);
+    switch (msg.type) {
+      case 'join': {
+        const result = this.join(tabletId, msg.code, msg.name);
+        if (result.error) this.sendToDevice(tabletId, { type: 'joinError', error: result.error });
+        break;
+      }
+      case 'rename': {
+        const result = this.rename(tabletId, msg.name);
+        if (result.error) this.sendToDevice(tabletId, { type: 'joinError', error: result.error });
+        break;
+      }
+      case 'status':
+        this.recordStatus(tabletId, msg);
+        break;
+      case 'linkAck':
+        this.recordLinkAck(tabletId, cleanString(msg.id, 40), msg.stage);
+        break;
+      default:
     }
   }
 
-  sendToDevice(pupilId, message) {
-    const device = this.devices.get(pupilId);
+  recordStatus(tabletId, msg) {
+    const lesson = this.lessonForTablet(tabletId);
+    // Outside a lesson we keep nothing about what the tablet is doing.
+    if (!lesson) {
+      this.live.delete(tabletId);
+      return;
+    }
+    const off = msg.state === 'off';
+    this.live.set(tabletId, {
+      state: DEVICE_STATES.has(msg.state) ? msg.state : 'unknown',
+      screenOn: msg.screenOn !== false,
+      appLabel: cleanString(msg.appLabel, 60),
+      // Site and package are only sent when the pupil is off task.
+      appPackage: off ? normalisePackageList([msg.appPackage])[0] || null : null,
+      domain: off ? normaliseDomain(msg.domain || '') : null,
+      matched: cleanString(msg.matched, 120),
+      detail: cleanString(msg.detail, 120),
+      perms: {
+        usage: !!(msg.perms && msg.perms.usage),
+        website: !!(msg.perms && msg.perms.website),
+      },
+      battery: Number.isFinite(msg.battery) ? Math.max(0, Math.min(100, Math.round(msg.battery))) : null,
+      at: Date.now(),
+    });
+    this.scheduleBroadcast(lesson.id);
+  }
+
+  sendToDevice(tabletId, message) {
+    const device = this.devices.get(tabletId);
     if (device && device.ws.readyState === 1) device.ws.send(JSON.stringify(message));
   }
 
   // Called on a timer: drop tablets we have not heard from recently.
   sweepStaleDevices(now = Date.now()) {
-    for (const [pupilId, device] of this.devices) {
+    for (const [tabletId, device] of this.devices) {
       if (now - device.lastMessageAt > DEVICE_TIMEOUT_MS) {
         device.ws.terminate();
-        this.devices.delete(pupilId);
-        this.scheduleBroadcastForPupil(pupilId);
+        this.devices.delete(tabletId);
+        this.broadcastAll();
       }
     }
   }
 
-  // ---- Teacher dashboards -------------------------------------------------
+  // Tablets that are switched on and connected but not in any lesson.
+  // Shown on every dashboard, so a pupil who never joined can be spotted.
+  unjoinedTablets() {
+    const out = [];
+    for (const tabletId of this.devices.keys()) {
+      if (this.tabletLesson.has(tabletId)) continue;
+      const tablet = this.store.getTablet(tabletId);
+      if (tablet) out.push(tablet.number);
+    }
+    return out.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
+  }
+
+  tabletsOverview() {
+    return this.store.listTablets().map((t) => {
+      const lesson = this.lessonForTablet(t.id);
+      return {
+        id: t.id,
+        number: t.number,
+        connected: this.devices.has(t.id),
+        lastSeen: this.lastSeen.get(t.id) || null,
+        lessonTitle: lesson ? lesson.title : null,
+        enrolledAt: t.enrolledAt,
+      };
+    });
+  }
+
+  // ---- Teacher dashboards ----------------------------------------------------
 
   attachTeacher(ws) {
-    const entry = { ws, classId: null };
+    const entry = { ws, lessonId: null };
     this.teachers.add(entry);
     ws.on('message', (raw) => {
       let msg;
@@ -254,24 +415,26 @@ export class Hub {
       } catch {
         return;
       }
-      if (msg && msg.type === 'watch' && typeof msg.classId === 'string') {
-        entry.classId = msg.classId;
-        this.sendClassState(entry);
+      if (msg && msg.type === 'watch') {
+        entry.lessonId = typeof msg.lessonId === 'string' ? msg.lessonId : null;
+        this.sendLessonState2Teacher(entry);
       }
     });
     ws.on('close', () => this.teachers.delete(entry));
   }
 
-  pupilView(pupilId, lesson) {
-    const pupil = this.store.getPupil(pupilId);
-    const connected = this.devices.has(pupilId);
-    const report = this.live.get(pupilId);
+  pupilView(lesson, tabletId, participant, nameCounts) {
+    const tablet = this.store.getTablet(tabletId);
+    const connected = this.devices.has(tabletId);
+    const report = this.live.get(tabletId);
     const view = {
-      id: pupilId,
-      name: pupil ? pupil.name : '(removed pupil)',
-      paired: this.store.isPupilPaired(pupilId),
+      id: tabletId,
+      name: participant.name,
+      tabletNumber: tablet ? tablet.number : '?',
+      duplicateName: nameCounts.get(participant.name.toLowerCase()) > 1,
+      nameRequested: participant.nameRequested,
       connected,
-      lastSeen: this.lastSeen.get(pupilId) || null,
+      lastSeen: this.lastSeen.get(tabletId) || null,
       status: 'offline',
       appLabel: null,
       appPackage: null,
@@ -283,70 +446,77 @@ export class Hub {
       links: {},
     };
     if (connected) {
-      if (!lesson) view.status = 'connected';
-      else if (!report) view.status = 'unknown';
+      if (!report) view.status = 'unknown';
       else if (!report.screenOn) view.status = 'asleep';
       else {
         view.status = report.state === 'paused' ? 'unknown' : report.state;
-        view.appLabel = report.appLabel;
-        view.appPackage = report.appPackage;
-        view.domain = report.domain;
-        view.matched = report.matched;
-        view.detail = report.detail;
+        Object.assign(view, {
+          appLabel: report.appLabel,
+          appPackage: report.appPackage,
+          domain: report.domain,
+          matched: report.matched,
+          detail: report.detail,
+        });
       }
     }
-    if (lesson) {
-      for (const link of lesson.links) {
-        if (pupilId in link.targets) view.links[link.id] = link.targets[pupilId];
-      }
+    for (const link of lesson.links) {
+      if (tabletId in link.targets) view.links[link.id] = link.targets[tabletId];
     }
     return view;
   }
 
-  classState(classId) {
-    const cls = this.store.getClass(classId);
-    if (!cls) return { type: 'classState', classId, missing: true };
-    const lesson = this.lessons.get(classId) || null;
-    const pupils = cls.pupilIds.map((id) => this.pupilView(id, lesson));
-    pupils.sort((a, b) => a.name.localeCompare(b.name));
-    const counts = {};
-    for (const p of pupils) counts[p.status] = (counts[p.status] || 0) + 1;
+  lessonState(lessonId) {
+    const base = { type: 'lessonState', lessons: this.listLessons(), unjoinedTablets: this.unjoinedTablets() };
+    const lesson = lessonId && this.lessons.get(lessonId);
+    if (!lesson) return { ...base, lesson: null, lessonId, ended: !!lessonId };
+
+    const nameCounts = new Map();
+    for (const p of lesson.participants.values()) {
+      const k = p.name.toLowerCase();
+      nameCounts.set(k, (nameCounts.get(k) || 0) + 1);
+    }
+    const pupils = [...lesson.participants].map(([id, p]) => this.pupilView(lesson, id, p, nameCounts));
+    pupils.sort((a, b) => a.name.localeCompare(b.name) || a.tabletNumber.localeCompare(b.tabletNumber, undefined, { numeric: true }));
     return {
-      type: 'classState',
-      classId,
-      className: cls.name,
-      lesson: lesson && {
+      ...base,
+      lessonId,
+      lesson: {
+        id: lesson.id,
+        title: lesson.title,
+        joinCode: lesson.joinCode,
         startedAt: lesson.startedAt,
+        endsAt: lesson.endsAt,
         allowedDomains: lesson.allowedDomains,
         allowedApps: lesson.allowedApps,
         links: lesson.links.map((l) => ({ id: l.id, url: l.url, sentAt: l.sentAt })),
       },
       pupils,
-      counts,
       serverTime: Date.now(),
     };
   }
 
-  sendClassState(entry) {
-    if (!entry.classId || entry.ws.readyState !== 1) return;
-    entry.ws.send(JSON.stringify(this.classState(entry.classId)));
-  }
-
-  scheduleBroadcastForPupil(pupilId) {
-    for (const classId of this.store.classIdsForPupil(pupilId)) this.scheduleBroadcast(classId);
+  sendLessonState2Teacher(entry) {
+    if (entry.ws.readyState !== 1) return;
+    entry.ws.send(JSON.stringify(this.lessonState(entry.lessonId)));
   }
 
   // Batches updates so 30 tablets reporting at once cause one redraw, not 30.
-  scheduleBroadcast(classId) {
-    this.pendingBroadcast.add(classId);
+  scheduleBroadcast(lessonId) {
+    this.pendingBroadcast.add(lessonId);
     if (this.broadcastTimer) return;
     this.broadcastTimer = setTimeout(() => {
       this.broadcastTimer = null;
-      const classIds = [...this.pendingBroadcast];
+      const all = this.pendingBroadcast.has('*');
+      const ids = new Set(this.pendingBroadcast);
       this.pendingBroadcast.clear();
       for (const entry of this.teachers) {
-        if (classIds.includes(entry.classId)) this.sendClassState(entry);
+        if (all || ids.has(entry.lessonId)) this.sendLessonState2Teacher(entry);
       }
     }, 250);
+  }
+
+  // Something every dashboard shows changed (running lessons, unjoined tablets).
+  broadcastAll() {
+    this.scheduleBroadcast('*');
   }
 }

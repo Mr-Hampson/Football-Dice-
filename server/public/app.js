@@ -1,5 +1,5 @@
 // Teacher dashboard. Plain JavaScript, no framework, so it is easy to read
-// and change. The server pushes a full "class state" over a WebSocket
+// and change. The server pushes a full "lesson state" over a WebSocket
 // whenever anything changes, and this file simply redraws from it.
 
 const $ = (id) => document.getElementById(id);
@@ -21,16 +21,13 @@ const STATUS_TEXT = {
   unknown: "Can't tell",
   asleep: 'Screen off',
   offline: 'Not connected',
-  connected: 'Connected',
-  unpaired: 'Tablet not set up',
 };
-const SUMMARY_ORDER = ['on', 'off', 'idle', 'unknown', 'asleep', 'offline', 'unpaired', 'connected'];
+const SUMMARY_ORDER = ['on', 'off', 'idle', 'unknown', 'asleep', 'offline'];
 
 const state = {
   view: 'lesson',
-  classes: [],
-  classId: null,
-  classState: null,
+  lessonId: null,
+  snap: null, // latest lessonState from the server
   selected: new Set(),
   startDomains: [],
   ws: null,
@@ -75,16 +72,30 @@ function ago(ts) {
   return new Date(ts).toLocaleDateString('en-GB');
 }
 
+function clock(ts) {
+  return new Date(ts).toLocaleTimeString('en-GB', { hour: '2-digit', minute: '2-digit' });
+}
+
 function normaliseDomain(input) {
   let s = String(input || '').trim().toLowerCase();
   s = s.replace(/^[a-z][a-z0-9+.-]*:\/\//, '').split(/[/?#]/)[0].replace(/:\d+$/, '').replace(/^www\./, '');
   return /^([a-z0-9-]+\.)+[a-z]{2,}$/.test(s) ? s : null;
 }
 
+function store(key, value) {
+  try {
+    if (value == null) localStorage.removeItem(`hub.${key}`);
+    else localStorage.setItem(`hub.${key}`, value);
+  } catch { /* private mode etc. */ }
+}
+function recall(key) {
+  try { return localStorage.getItem(`hub.${key}`); } catch { return null; }
+}
+
 // ---- Views -----------------------------------------------------------------
 
 function showOnly(id) {
-  for (const v of ['loginView', 'lessonView', 'manageView']) $(v).hidden = v !== id;
+  for (const v of ['loginView', 'lessonView', 'tabletsView']) $(v).hidden = v !== id;
 }
 
 function showLogin() {
@@ -101,29 +112,10 @@ function showLogin() {
 function setView(view) {
   state.view = view;
   $('navLesson').classList.toggle('active', view === 'lesson');
-  $('navManage').classList.toggle('active', view === 'manage');
-  showOnly(view === 'lesson' ? 'lessonView' : 'manageView');
+  $('navTablets').classList.toggle('active', view === 'tablets');
+  showOnly(view === 'lesson' ? 'lessonView' : 'tabletsView');
+  if (view === 'tablets') loadTablets();
   render();
-  if (view === 'manage') loadManage();
-}
-
-async function loadClasses(selectId) {
-  const { classes } = await api('GET', '/api/classes');
-  state.classes = classes;
-  const select = $('classSelect');
-  select.replaceChildren(...classes.map((c) => el('option', { value: c.id }, `${c.name} (${c.pupilCount})`)));
-  const remembered = selectId || state.classId || localStorageGet('classId');
-  state.classId = classes.some((c) => c.id === remembered) ? remembered : classes[0]?.id || null;
-  if (state.classId) select.value = state.classId;
-  select.hidden = !classes.length;
-  watchClass();
-}
-
-function localStorageGet(key) {
-  try { return localStorage.getItem(`hub.${key}`); } catch { return null; }
-}
-function localStorageSet(key, value) {
-  try { localStorage.setItem(`hub.${key}`, value); } catch { /* private mode etc. */ }
 }
 
 // ---- Live connection -------------------------------------------------------
@@ -134,14 +126,22 @@ function connect() {
   state.ws = ws;
   ws.onopen = () => {
     state.wsRetry = 1000;
-    watchClass();
+    watch(state.lessonId);
   };
   ws.onmessage = (event) => {
     const msg = JSON.parse(event.data);
-    if (msg.type === 'classState' && msg.classId === state.classId) {
-      state.classState = msg;
-      render();
+    if (msg.type !== 'lessonState' || msg.lessonId !== state.lessonId) return;
+    if (msg.ended) {
+      // Our lesson finished (ended elsewhere or hit the time limit).
+      state.lessonId = null;
+      store('lessonId', null);
+      msg.lessonId = null;
     }
+    state.snap = msg;
+    // Forget selections of pupils who have left.
+    const ids = new Set((msg.pupils || []).map((p) => p.id));
+    for (const id of state.selected) if (!ids.has(id)) state.selected.delete(id);
+    render();
   };
   ws.onclose = () => {
     // Reconnect automatically, waiting a little longer each time.
@@ -154,32 +154,35 @@ function connect() {
   };
 }
 
-function watchClass() {
-  state.classState = null;
-  state.selected.clear();
-  render();
-  if (state.ws && state.ws.readyState === WebSocket.OPEN && state.classId) {
-    state.ws.send(JSON.stringify({ type: 'watch', classId: state.classId }));
+function watch(lessonId) {
+  if (lessonId !== state.lessonId) {
+    state.selected.clear();
+    state.snap = null;
   }
+  state.lessonId = lessonId;
+  store('lessonId', lessonId);
+  if (state.ws && state.ws.readyState === WebSocket.OPEN) {
+    state.ws.send(JSON.stringify({ type: 'watch', lessonId }));
+  }
+  render();
 }
 
 // ---- Lesson view rendering -------------------------------------------------
 
 function render() {
   if (state.view !== 'lesson') return;
-  const cs = state.classState;
-  $('noClasses').hidden = state.classes.length > 0;
-  const lesson = cs && cs.lesson;
-  $('startPanel').hidden = !cs || !!lesson;
+  const snap = state.snap;
+  const lesson = snap && snap.lesson;
+  $('startPanel').hidden = !snap || !!lesson;
   $('runningPanel').hidden = !lesson;
-  $('selectionHint').hidden = !lesson;
-
-  if (cs && !lesson) renderStartPanel();
-  if (lesson) renderRunning(cs);
-  renderGrid(cs);
+  $('selectionHint').hidden = !lesson || !snap.pupils.length;
+  if (snap && !lesson) renderStartPanel(snap);
+  if (lesson) renderRunning(snap);
+  renderGrid(snap);
+  renderUnjoined(snap);
 }
 
-function renderStartPanel() {
+function renderStartPanel(snap) {
   const list = $('presetList');
   if (!list.childElementCount) {
     for (const preset of PRESETS) {
@@ -187,13 +190,18 @@ function renderStartPanel() {
       list.append(el('label', { class: 'preset' }, box, preset.label));
     }
   }
-  $('startChips').replaceChildren(
-    ...state.startDomains.map((d) =>
-      el('span', { class: 'chip' }, d, el('button', {
-        type: 'button', 'aria-label': `Remove ${d}`,
-        onclick: () => { state.startDomains = state.startDomains.filter((x) => x !== d); render(); },
-      }, '×'))),
-  );
+  $('startChips').replaceChildren(...state.startDomains.map((d) => chip(d, () => {
+    state.startDomains = state.startDomains.filter((x) => x !== d);
+    render();
+  })));
+  $('runningList').hidden = !snap.lessons.length;
+  $('runningButtons').replaceChildren(...snap.lessons.map((l) =>
+    el('button', { type: 'button', onclick: () => watch(l.id) }, `${l.title} · ${l.joinCode} · ${l.pupilCount} pupils`)));
+}
+
+function chip(text, onRemove) {
+  return el('span', { class: 'chip' }, text,
+    el('button', { type: 'button', 'aria-label': `Remove ${text}`, onclick: onRemove }, '×'));
 }
 
 function togglePreset(preset, on) {
@@ -205,34 +213,31 @@ function togglePreset(preset, on) {
   render();
 }
 
-function displayStatus(p) {
-  if (!p.paired && !p.connected) return 'unpaired';
-  return p.status;
-}
+function renderRunning(snap) {
+  const { lesson, pupils } = snap;
+  $('joinCode').textContent = lesson.joinCode;
+  $('lessonTitleShown').textContent = lesson.title;
+  $('lessonTimes').textContent = `Started ${clock(lesson.startedAt)} · ends automatically at ${clock(lesson.endsAt)}`;
 
-function renderRunning(cs) {
   const counts = {};
-  for (const p of cs.pupils) {
-    const s = displayStatus(p);
-    counts[s] = (counts[s] || 0) + 1;
-  }
+  for (const p of pupils) counts[p.status] = (counts[p.status] || 0) + 1;
   $('summary').replaceChildren(
-    ...SUMMARY_ORDER.filter((s) => counts[s]).map((s) => el('span', { class: `count s-${s}` }, `${counts[s]} ${STATUS_TEXT[s].toLowerCase()}`)),
+    el('span', { class: 'count s-connected' }, `${pupils.length} joined`),
+    ...SUMMARY_ORDER.filter((s) => counts[s]).map((s) =>
+      el('span', { class: `count s-${s}` }, `${counts[s]} ${STATUS_TEXT[s].toLowerCase()}`)),
   );
+
   $('allowedChips').replaceChildren(
-    ...cs.lesson.allowedDomains.map((d) =>
-      el('span', { class: 'chip' }, d, el('button', {
-        type: 'button', 'aria-label': `Remove ${d}`, onclick: () => updateAllowed(cs.lesson.allowedDomains.filter((x) => x !== d)),
-      }, '×'))),
-    ...cs.lesson.allowedApps.map((pkg) =>
-      el('span', { class: 'chip' }, `app: ${pkg}`, el('button', {
-        type: 'button', 'aria-label': `Remove ${pkg}`, onclick: () => updateAllowed(undefined, cs.lesson.allowedApps.filter((x) => x !== pkg)),
-      }, '×'))),
-    ...(cs.lesson.allowedDomains.length || cs.lesson.allowedApps.length ? [] : [el('span', { class: 'hint' }, 'none yet')]),
+    ...lesson.allowedDomains.map((d) => chip(d, () => updateAllowed(lesson.allowedDomains.filter((x) => x !== d)))),
+    ...lesson.allowedApps.map((pkg) => chip(`app: ${pkg}`, () => updateAllowed(undefined, lesson.allowedApps.filter((x) => x !== pkg)))),
+    ...(lesson.allowedDomains.length || lesson.allowedApps.length ? [] : [el('span', { class: 'hint' }, 'none yet')]),
   );
+
   const n = state.selected.size;
   $('sendSelectedBtn').disabled = n === 0;
   $('sendSelectedBtn').textContent = `Send to selected (${n})`;
+  $('actionBar').hidden = n === 0;
+  $('selectedCount').textContent = `${n} selected:`;
 }
 
 function cardDetail(p) {
@@ -240,21 +245,19 @@ function cardDetail(p) {
     case 'on': return p.matched ? `${p.appLabel || 'Browser'} · ${p.matched}` : p.appLabel || '';
     case 'off': return p.domain ? `${p.appLabel || 'Browser'} · ${p.domain}` : p.appLabel || 'Another app';
     case 'unknown': return p.detail || 'Waiting for the tablet to report';
-    case 'offline': return p.paired ? `Last seen ${ago(p.lastSeen)}` : '';
+    case 'offline': return `Last seen ${ago(p.lastSeen)}`;
     case 'asleep': return 'Tablet asleep or locked';
     case 'idle': return 'Not using an app';
-    case 'connected': return 'Ready – start a lesson to see activity';
     default: return '';
   }
 }
 
-function linkSummary(cs, p) {
-  const links = cs.lesson ? cs.lesson.links : [];
+function linkSummary(lesson, p) {
   // Show the most recent link sent to this pupil.
-  for (let i = links.length - 1; i >= 0; i--) {
-    const stage = p.links[links[i].id];
+  for (let i = lesson.links.length - 1; i >= 0; i--) {
+    const stage = p.links[lesson.links[i].id];
     if (stage) {
-      const host = new URL(links[i].url).hostname.replace(/^www\./, '');
+      const host = new URL(lesson.links[i].url).hostname.replace(/^www\./, '');
       const text = { sent: '⏳ waiting', delivered: '✓ received', opened: '✓✓ opened' }[stage];
       return `Link (${host}): ${text}`;
     }
@@ -262,31 +265,34 @@ function linkSummary(cs, p) {
   return null;
 }
 
-function renderGrid(cs) {
+function renderGrid(snap) {
   const grid = $('pupilGrid');
-  if (!cs) {
+  if (!snap || !snap.lesson) {
     grid.replaceChildren();
     return;
   }
-  if (!cs.pupils.length) {
-    grid.replaceChildren(el('p', { class: 'panel empty' }, 'No pupils in this class yet. Add them under “Classes & tablets”.'));
+  if (!snap.pupils.length) {
+    grid.replaceChildren(el('p', { class: 'panel empty' },
+      `No one has joined yet. Ask pupils to open Classroom Hub and type the code ${snap.lesson.joinCode}.`));
     return;
   }
-  grid.replaceChildren(...cs.pupils.map((p) => {
-    const status = displayStatus(p);
+  grid.replaceChildren(...snap.pupils.map((p) => {
     const selected = state.selected.has(p.id);
     const quick = [];
-    if (cs.lesson && p.status === 'off' && p.domain) {
+    if (p.status === 'off' && p.domain) {
       quick.push(el('button', { type: 'button', class: 'small quick', onclick: (e) => { e.stopPropagation(); allowDomain(p.domain); } }, `Allow ${p.domain}`));
     }
-    if (cs.lesson && p.status === 'off' && !p.domain && p.appPackage) {
+    if (p.status === 'off' && !p.domain && p.appPackage) {
       quick.push(el('button', { type: 'button', class: 'small quick', onclick: (e) => { e.stopPropagation(); allowApp(p.appPackage); } }, `Allow ${p.appLabel || 'this app'}`));
     }
-    const warn = p.connected && p.perms && cs.lesson && (!p.perms.usage || !p.perms.website)
-      ? el('div', { class: 'detail' }, !p.perms.usage ? '⚠ App tracking permission off' : '⚠ Website check off')
-      : null;
+    const badges = [];
+    if (p.duplicateName) badges.push(el('div', { class: 'badge' }, '⚠ Same name as another tablet'));
+    if (p.nameRequested) badges.push(el('div', { class: 'badge info' }, '✎ Asked to retype name'));
+    if (p.connected && p.perms && (!p.perms.usage || !p.perms.website)) {
+      badges.push(el('div', { class: 'detail' }, !p.perms.usage ? '⚠ App tracking permission off' : '⚠ Website check off'));
+    }
     return el('div', {
-      class: `card s-${status}${selected ? ' selected' : ''}`,
+      class: `card s-${p.status}${selected ? ' selected' : ''}`,
       role: 'button',
       tabindex: '0',
       'aria-pressed': selected ? 'true' : 'false',
@@ -295,100 +301,87 @@ function renderGrid(cs) {
     },
     el('span', { class: 'tick', 'aria-hidden': 'true' }),
     el('div', { class: 'name' }, p.name),
-    el('div', { class: 'status' }, STATUS_TEXT[status] || status),
+    el('div', { class: 'tablet' }, `Tablet ${p.tabletNumber}`),
+    el('div', { class: 'status' }, STATUS_TEXT[p.status] || p.status),
     el('div', { class: 'detail' }, cardDetail(p)),
-    warn,
+    badges,
     quick,
-    cs.lesson ? el('div', { class: 'linkstate' }, linkSummary(cs, p)) : null);
+    el('div', { class: 'linkstate' }, linkSummary(snap.lesson, p)));
   }));
 }
 
-function toggleSelect(pupilId) {
-  if (!state.classState || !state.classState.lesson) return;
-  if (state.selected.has(pupilId)) state.selected.delete(pupilId);
-  else state.selected.add(pupilId);
+function renderUnjoined(snap) {
+  const list = snap ? snap.unjoinedTablets : [];
+  $('unjoinedPanel').hidden = !list.length;
+  $('unjoinedChips').replaceChildren(...list.map((n) => el('span', { class: 'chip' }, `Tablet ${n}`)));
+}
+
+function toggleSelect(id) {
+  if (state.selected.has(id)) state.selected.delete(id);
+  else state.selected.add(id);
   render();
 }
 
 // ---- Lesson actions --------------------------------------------------------
 
-async function updateAllowed(allowedDomains, allowedApps) {
+function lessonUrl(suffix) {
+  return `/api/lessons/${state.lessonId}${suffix}`;
+}
+
+async function guarded(fn) {
+  $('linkError').textContent = '';
   try {
-    await api('PUT', `/api/classes/${state.classId}/lesson/allowed`, { allowedDomains, allowedApps });
+    await fn();
   } catch (err) {
     $('linkError').textContent = err.message;
   }
 }
 
+function updateAllowed(allowedDomains, allowedApps) {
+  return guarded(() => api('PUT', lessonUrl('/allowed'), { allowedDomains, allowedApps }));
+}
+
 function allowDomain(domain) {
-  const current = state.classState.lesson.allowedDomains;
+  const current = state.snap.lesson.allowedDomains;
   if (!current.includes(domain)) updateAllowed([...current, domain]);
 }
 
 function allowApp(pkg) {
-  const current = state.classState.lesson.allowedApps;
+  const current = state.snap.lesson.allowedApps;
   if (!current.includes(pkg)) updateAllowed(undefined, [...current, pkg]);
 }
 
-async function sendLink(pupilIds) {
-  $('linkError').textContent = '';
+function sendLink(tabletIds) {
   const url = $('linkInput').value.trim();
   if (!url) {
     $('linkError').textContent = 'Paste a link first.';
     return;
   }
-  try {
-    await api('POST', `/api/classes/${state.classId}/links`, { url, pupilIds });
+  guarded(async () => {
+    await api('POST', lessonUrl('/links'), { url, tabletIds });
     $('linkInput').value = '';
     state.selected.clear();
     render();
-  } catch (err) {
-    $('linkError').textContent = err.message;
-  }
+  });
 }
 
-// ---- Manage view -----------------------------------------------------------
+// ---- Tablets view ----------------------------------------------------------
 
-async function loadManage() {
-  const detail = $('classDetail');
-  if (!state.classId) {
-    detail.hidden = true;
-    return;
-  }
-  const { class: cls, pupils } = await api('GET', `/api/classes/${state.classId}/pupils`);
-  detail.hidden = false;
-  $('classDetailTitle').textContent = cls.name;
-  $('pupilRows').replaceChildren(...pupils.map((p) => el('tr', {},
-    el('td', {}, p.name),
-    el('td', {}, p.paired ? 'Set up ✓' : 'Not set up'),
-    el('td', {},
-      el('button', { type: 'button', class: 'small', onclick: () => showCode(p) }, p.paired ? 'Replace tablet' : 'Get setup code'),
-      p.paired ? el('button', { type: 'button', class: 'small', onclick: () => unpair(p) }, 'Unpair') : null,
-      el('button', { type: 'button', class: 'small danger', onclick: () => removePupil(p) }, 'Remove')),
-  )));
-  if (!pupils.length) $('pupilRows').append(el('tr', {}, el('td', { colspan: '3', class: 'hint' }, 'No pupils yet.')));
+async function loadTablets() {
+  const { tablets } = await api('GET', '/api/tablets');
+  const rows = tablets.map((t) => el('tr', {},
+    el('td', {}, `Tablet ${t.number}`),
+    el('td', {}, t.connected ? (t.lessonTitle ? `In lesson: ${t.lessonTitle}` : 'On, not in a lesson') : 'Off / not connected'),
+    el('td', {}, t.connected ? 'now' : ago(t.lastSeen)),
+    el('td', {}, el('button', { type: 'button', class: 'small danger', onclick: () => removeTablet(t) }, 'Remove'))));
+  $('tabletRows').replaceChildren(...(rows.length ? rows
+    : [el('tr', {}, el('td', { colspan: '4', class: 'hint' }, 'No tablets set up yet.'))]));
 }
 
-async function showCode(p) {
-  if (p.paired && !confirm(`${p.name} already has a tablet set up. A new code will replace it when used. Continue?`)) return;
-  const { code } = await api('POST', `/api/pupils/${p.id}/pairing-code`);
-  $('codeName').textContent = p.name;
-  $('codeValue').textContent = `${code.slice(0, 3)} ${code.slice(3)}`;
-  $('codeServer').textContent = location.origin;
-  $('codeDialog').showModal();
-}
-
-async function unpair(p) {
-  if (!confirm(`Unpair ${p.name}'s tablet? It will stop connecting until set up again.`)) return;
-  await api('POST', `/api/pupils/${p.id}/unpair`);
-  loadManage();
-}
-
-async function removePupil(p) {
-  if (!confirm(`Remove ${p.name} from this class?`)) return;
-  await api('DELETE', `/api/classes/${state.classId}/pupils/${p.id}`);
-  await loadClasses(state.classId);
-  loadManage();
+async function removeTablet(t) {
+  if (!confirm(`Remove Tablet ${t.number}? It will need setting up again.`)) return;
+  await api('DELETE', `/api/tablets/${t.id}`);
+  loadTablets();
 }
 
 // ---- Wiring ----------------------------------------------------------------
@@ -410,13 +403,7 @@ function wire() {
     showLogin();
   });
   $('navLesson').addEventListener('click', () => setView('lesson'));
-  $('navManage').addEventListener('click', () => setView('manage'));
-  $('classSelect').addEventListener('change', (e) => {
-    state.classId = e.target.value;
-    localStorageSet('classId', state.classId);
-    watchClass();
-    if (state.view === 'manage') loadManage();
-  });
+  $('navTablets').addEventListener('click', () => setView('tablets'));
 
   $('startAddCustom').addEventListener('click', () => {
     const d = normaliseDomain($('startCustom').value);
@@ -425,11 +412,13 @@ function wire() {
     render();
   });
   $('startLessonBtn').addEventListener('click', async () => {
-    await api('POST', `/api/classes/${state.classId}/lesson/start`, { allowedDomains: state.startDomains });
+    const { id } = await api('POST', '/api/lessons', { title: $('lessonTitle').value, allowedDomains: state.startDomains });
+    $('lessonTitle').value = '';
+    watch(id);
   });
   $('endLessonBtn').addEventListener('click', async () => {
-    if (!confirm('End the lesson? Activity for this lesson will be cleared.')) return;
-    await api('POST', `/api/classes/${state.classId}/lesson/end`);
+    if (!confirm('End the lesson? All tablets leave and names and activity are cleared.')) return;
+    await api('POST', lessonUrl('/end'));
   });
   $('linkForm').addEventListener('submit', (e) => {
     e.preventDefault();
@@ -442,40 +431,42 @@ function wire() {
     if (d) allowDomain(d);
     $('allowedInput').value = '';
   });
-
-  $('newClassForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    const cls = await api('POST', '/api/classes', { name: $('newClassName').value });
-    $('newClassName').value = '';
-    localStorageSet('classId', cls.id);
-    await loadClasses(cls.id);
-    loadManage();
-  });
-  $('addPupilsForm').addEventListener('submit', async (e) => {
-    e.preventDefault();
-    await api('POST', `/api/classes/${state.classId}/pupils`, { names: $('pupilNames').value });
-    $('pupilNames').value = '';
-    await loadClasses(state.classId);
-    loadManage();
-  });
-  $('deleteClassBtn').addEventListener('click', async () => {
-    const cls = state.classes.find((c) => c.id === state.classId);
-    if (!confirm(`Delete the class “${cls ? cls.name : ''}”? Pupils stay paired.`)) return;
-    await api('DELETE', `/api/classes/${state.classId}`);
-    state.classId = null;
-    await loadClasses();
-    loadManage();
+  $('renameBtn').addEventListener('click', () => guarded(async () => {
+    await api('POST', lessonUrl('/rename-requests'), { tabletIds: [...state.selected] });
+    state.selected.clear();
+    render();
+  }));
+  $('removeBtn').addEventListener('click', () => guarded(async () => {
+    if (!confirm(`Remove ${state.selected.size} pupil(s) from the lesson? Their tablets go back to the join screen.`)) return;
+    await api('POST', lessonUrl('/remove'), { tabletIds: [...state.selected] });
+    state.selected.clear();
+    render();
+  }));
+  $('clearSelBtn').addEventListener('click', () => {
+    state.selected.clear();
+    render();
   });
 
-  // Keep "last seen 2 min ago" text fresh without waiting for the server.
-  setInterval(() => render(), 30_000);
+  $('setupCodeBtn').addEventListener('click', async () => {
+    const { code } = await api('POST', '/api/tablets/setup-code');
+    $('codeValue').textContent = `${code.slice(0, 4)} ${code.slice(4)}`;
+    $('codeServer').textContent = location.origin;
+    $('codeDialog').showModal();
+  });
+
+  // Keep "last seen" text fresh, and the tablets list when it is open.
+  setInterval(() => {
+    render();
+    if (state.view === 'tablets') loadTablets().catch(() => {});
+  }, 15_000);
 }
 
-async function start() {
+function start() {
   $('topbarControls').hidden = false;
-  await loadClasses();
-  setView(state.classes.length ? 'lesson' : 'manage');
+  state.lessonId = recall('lessonId');
+  setView('lesson');
   if (!state.ws) connect();
+  else watch(state.lessonId);
 }
 
 wire();

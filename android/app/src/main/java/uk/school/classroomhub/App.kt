@@ -17,7 +17,7 @@ class App : Application() {
                 NotificationChannel(CHANNEL_LINKS, "Links from your teacher", NotificationManager.IMPORTANCE_HIGH)
             )
         }
-        if (Prefs(this).isPaired) HubService.start(this)
+        if (Prefs(this).isSetUp) HubService.start(this)
     }
 
     companion object {

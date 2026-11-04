@@ -14,6 +14,7 @@ import android.provider.Settings
 import android.text.InputType
 import android.view.Gravity
 import android.view.View
+import android.view.inputmethod.EditorInfo
 import android.widget.Button
 import android.widget.EditText
 import android.widget.LinearLayout
@@ -27,28 +28,41 @@ import org.json.JSONObject
 import java.util.concurrent.TimeUnit
 
 /**
- * The only screen in the app.
- *  - Not set up yet: asks for the hub address and the pupil's setup code.
- *  - Set up: shows connection status, what is shared, and a checklist of
- *    the permissions the app needs, with buttons to switch them on.
- *  - "Technical details" shows what the app can actually detect on this
- *    tablet. This is how we test feasibility on real Fire tablets.
+ * The only screen in the app. It has four modes:
+ *  - SETUP:  done once per tablet. Hub address, setup code, tablet number.
+ *  - JOIN:   no lesson. The pupil types the join code and their name.
+ *  - RENAME: the teacher asked the pupil to type their name again.
+ *  - LESSON: shows what is shared, plus the permission checklist.
+ * "Technical details" (all modes after setup) shows what the app can
+ * actually detect on this tablet, for the feasibility test.
  *
- * Built in code rather than XML layouts to keep the project small.
+ * The screen is only rebuilt when the mode changes, so a refresh never wipes
+ * what a pupil is typing. Status text is updated in place every second.
  */
 class MainActivity : Activity() {
+
+    private enum class Mode { SETUP, JOIN, RENAME, LESSON }
 
     private lateinit var prefs: Prefs
     private val handler = Handler(Looper.getMainLooper())
     private val refresh = object : Runnable {
         override fun run() {
-            if (prefs.isPaired) renderStatus()
-            handler.postDelayed(this, 2000)
+            render()
+            handler.postDelayed(this, 1000)
         }
     }
 
     private lateinit var root: LinearLayout
+    private var mode: Mode? = null
     private var showDetails = false
+
+    // Views updated in place on every refresh.
+    private var connectionView: TextView? = null
+    private var infoView: TextView? = null
+    private var errorView: TextView? = null
+    private var checklist: LinearLayout? = null
+    private var detailsView: TextView? = null
+    private var lastChecklistKey = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -62,8 +76,8 @@ class MainActivity : Activity() {
 
     override fun onResume() {
         super.onResume()
-        if (prefs.isPaired) HubService.start(this)
-        render()
+        if (prefs.isSetUp) HubService.start(this)
+        mode = null // rebuild once on return, e.g. after changing a setting
         handler.post(refresh)
     }
 
@@ -72,28 +86,48 @@ class MainActivity : Activity() {
         super.onPause()
     }
 
-    private fun render() {
-        if (prefs.isPaired) renderStatus() else renderSetup()
+    private fun currentMode(): Mode {
+        val lesson = HubService.lesson
+        return when {
+            !prefs.isSetUp -> Mode.SETUP
+            lesson?.active != true -> Mode.JOIN
+            lesson.nameRequested -> Mode.RENAME
+            else -> Mode.LESSON
+        }
     }
 
-    // ---- Setup ----------------------------------------------------------------
-
-    private fun renderSetup() {
-        root.removeAllViews()
-        root.addView(heading("Set up Classroom Hub"))
-        root.addView(body("Your teacher will give you the hub address and a 6-letter setup code."))
-
-        val server = EditText(this).apply {
-            hint = "Hub address, e.g. https://hub.example.org"
-            inputType = InputType.TYPE_TEXT_VARIATION_URI
-            setText(prefs.serverUrl ?: "https://")
+    private fun render() {
+        val next = currentMode()
+        if (next != mode) {
+            mode = next
+            root.removeAllViews()
+            connectionView = null; infoView = null; errorView = null; checklist = null; detailsView = null
+            lastChecklistKey = ""
+            when (next) {
+                Mode.SETUP -> buildSetup()
+                Mode.JOIN -> buildJoin()
+                Mode.RENAME -> buildRename()
+                Mode.LESSON -> buildLesson()
+            }
+            if (next != Mode.SETUP) buildFooter()
         }
-        val code = EditText(this).apply {
-            hint = "Setup code"
-            inputType = InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS
-        }
-        val error = body("").apply { setTextColor(Color.rgb(180, 35, 24)) }
-        val button = Button(this).apply { text = "Connect" }
+        updateDynamic()
+    }
+
+    // ---- SETUP (once per tablet) -------------------------------------------------
+
+    private fun buildSetup() {
+        root.addView(heading("Set up this tablet"))
+        root.addView(body("This is done once, by whoever manages the tablets. You need the hub address, " +
+            "a setup code from the hub's Tablets page, and the number on this tablet's sticker."))
+
+        val server = input("Hub address, e.g. https://hub.example.org", InputType.TYPE_TEXT_VARIATION_URI)
+            .apply { setText(prefs.serverUrl ?: "https://") }
+        val code = input("Setup code", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS)
+        val number = input("Tablet number, e.g. 7", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS)
+            .apply { setText(prefs.tabletNumber.orEmpty()) }
+        val error = errorText()
+        val button = Button(this).apply { text = "Set up" }
         button.setOnClickListener {
             val url = server.text.toString().trim().trimEnd('/')
             if (!url.startsWith("https://") && !url.startsWith("http://")) {
@@ -102,32 +136,31 @@ class MainActivity : Activity() {
             }
             button.isEnabled = false
             error.text = "Connecting…"
-            pair(url, code.text.toString()) { problem ->
+            enrol(url, code.text.toString(), number.text.toString()) { problem ->
                 button.isEnabled = true
                 if (problem == null) render() else error.text = problem
             }
         }
-        root.addView(label("Hub address"))
-        root.addView(server)
-        root.addView(label("Setup code"))
-        root.addView(code)
+        root.addView(label("Hub address")); root.addView(server)
+        root.addView(label("Setup code")); root.addView(code)
+        root.addView(label("Tablet number")); root.addView(number)
         root.addView(button)
         root.addView(error)
     }
 
-    /** Exchanges the setup code for this tablet's own secret token. */
-    private fun pair(url: String, code: String, done: (String?) -> Unit) {
+    /** Registers this tablet with the hub and stores its secret token. */
+    private fun enrol(url: String, code: String, number: String, done: (String?) -> Unit) {
         Thread {
             val problem = try {
                 val client = OkHttpClient.Builder().callTimeout(20, TimeUnit.SECONDS).build()
-                val body = JSONObject().put("code", code).toString()
+                val body = JSONObject().put("code", code).put("number", number).toString()
                     .toRequestBody("application/json".toMediaType())
-                client.newCall(Request.Builder().url("$url/api/device/pair").post(body).build()).execute().use { res ->
+                client.newCall(Request.Builder().url("$url/api/device/enrol").post(body).build()).execute().use { res ->
                     val json = JSONObject(res.body?.string().orEmpty().ifEmpty { "{}" })
                     if (res.isSuccessful) {
                         prefs.serverUrl = url
                         prefs.token = json.getString("token")
-                        prefs.pupilName = json.optString("pupilName")
+                        prefs.tabletNumber = json.optString("number")
                         null
                     } else {
                         json.optString("error", "Setup failed (${res.code})")
@@ -143,50 +176,113 @@ class MainActivity : Activity() {
         }.start()
     }
 
-    // ---- Status ---------------------------------------------------------------
+    // ---- JOIN (start of every lesson) ----------------------------------------------
 
-    private fun renderStatus() {
-        root.removeAllViews()
-        val name = prefs.pupilName ?: "pupil"
-        root.addView(heading("Hi $name"))
+    private fun buildJoin() {
+        root.addView(heading("Join your lesson"))
+        root.addView(subtle("Tablet ${prefs.tabletNumber ?: "?"}"))
+        connectionView = statusLine().also { root.addView(it) }
 
-        val lesson = HubService.lesson
-        root.addView(card(
-            if (HubService.connected) "● Connected to your class" else "○ ${HubService.connectionText}",
-            if (HubService.connected) GREEN else GREY,
-        ))
-        root.addView(body(
-            if (lesson?.active == true) {
-                "Lesson in progress: ${lesson.className}.\nYour teacher can see which app you are using " +
-                    "and the name of the website you are on (for example bbc.co.uk). " +
-                    "They cannot see the pages you read, your screen, or anything you type."
+        val code = input("Join code from the board", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_CHARACTERS)
+            .apply { textSize = 24f }
+        val name = nameInput()
+        val button = Button(this).apply { text = "Join" }
+        button.setOnClickListener {
+            val nameText = name.text.toString()
+            val problem = Names.problemWith(nameText)
+            if (problem != null) {
+                errorView?.text = problem
             } else {
-                "No lesson right now. Nothing about what you are doing is shared."
+                errorView?.text = "Joining…"
+                HubService.joinError = null
+                HubService.join(this, code.text.toString(), nameText)
             }
-        ))
+        }
+        name.setOnEditorActionListener { _, actionId, _ ->
+            if (actionId == EditorInfo.IME_ACTION_DONE) { button.performClick(); true } else false
+        }
+        root.addView(label("Join code")); root.addView(code)
+        root.addView(label("Your name")); root.addView(name)
+        root.addView(subtle(Names.HINT))
+        root.addView(button)
+        errorView = errorText().also { root.addView(it) }
+        root.addView(body("Nothing about what you do on this tablet is shared until you join a lesson."))
+    }
 
-        root.addView(label("Setup checklist"))
-        val usage = Permissions.hasUsageAccess(this)
-        root.addView(checkRow(
-            usage, "App tracking (Usage access)",
-            "Lets the hub see which app is open.", "Open settings",
-        ) { openUsageSettings() })
-        val website = Permissions.isWebsiteCheckOn(this)
-        root.addView(checkRow(
-            website, "Website check",
-            "Settings › Accessibility › Classroom Hub website check.", "Open settings",
-        ) { openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS) })
+    // ---- RENAME (teacher asked) -----------------------------------------------------
 
-        val details = TextView(this).apply {
+    private fun buildRename() {
+        root.addView(heading("Please retype your name"))
+        root.addView(body("Your teacher asked you to enter your name again."))
+        val name = nameInput()
+        val button = Button(this).apply { text = "Save name" }
+        button.setOnClickListener {
+            val problem = Names.problemWith(name.text.toString())
+            if (problem != null) {
+                errorView?.text = problem
+            } else {
+                errorView?.text = "Saving…"
+                HubService.joinError = null
+                HubService.rename(this, name.text.toString())
+            }
+        }
+        root.addView(label("Your name")); root.addView(name)
+        root.addView(subtle(Names.HINT))
+        root.addView(button)
+        errorView = errorText().also { root.addView(it) }
+    }
+
+    // ---- LESSON ---------------------------------------------------------------------
+
+    private fun buildLesson() {
+        val lesson = HubService.lesson ?: return
+        root.addView(heading("Hi ${lesson.name}"))
+        root.addView(subtle("Tablet ${prefs.tabletNumber ?: "?"} · ${lesson.title}"))
+        connectionView = statusLine().also { root.addView(it) }
+        infoView = body("Your teacher can see which app you are using and the name of the website you are on " +
+            "(for example bbc.co.uk). They cannot see the pages you read, your screen, or anything you type. " +
+            "This stops when the lesson ends.").also { root.addView(it) }
+    }
+
+    // ---- Footer: checklist + technical details --------------------------------------
+
+    private fun buildFooter() {
+        root.addView(label("Tablet setup checklist"))
+        checklist = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }.also { root.addView(it) }
+        root.addView(TextView(this).apply {
             text = if (showDetails) "▼ Technical details" else "▶ Technical details"
             setPadding(0, dp(20), 0, dp(6))
-            setTextColor(Color.rgb(36, 89, 201))
-            setOnClickListener { showDetails = !showDetails; renderStatus() }
-            // Long-press: reset, for whoever manages the tablets.
+            setTextColor(BLUE)
+            setOnClickListener { showDetails = !showDetails; mode = null; render() }
+            // Long-press: reset the tablet (for whoever manages the tablets).
             setOnLongClickListener { confirmReset(); true }
+        })
+        if (showDetails) detailsView = mono("").also { root.addView(it) }
+    }
+
+    private fun updateDynamic() {
+        connectionView?.let {
+            it.text = if (HubService.connected) "● Connected to the hub" else "○ ${HubService.connectionText}"
+            it.setTextColor(if (HubService.connected) GREEN else GREY)
         }
-        root.addView(details)
-        if (showDetails) root.addView(mono(diagnostics()))
+        HubService.joinError?.let { errorView?.text = it }
+
+        val usage = Permissions.hasUsageAccess(this)
+        val website = Permissions.isWebsiteCheckOn(this)
+        val key = "$usage/$website"
+        checklist?.let { list ->
+            if (key != lastChecklistKey) {
+                lastChecklistKey = key
+                list.removeAllViews()
+                list.addView(checkRow(usage, "App tracking (Usage access)",
+                    "Lets the hub see which app is open.", "Open settings") { openUsageSettings() })
+                list.addView(checkRow(website, "Website check",
+                    "Settings › Accessibility › Classroom Hub website check.", "Open settings") {
+                    openSettings(Settings.ACTION_ACCESSIBILITY_SETTINGS)
+                })
+            }
+        }
+        detailsView?.text = diagnostics()
     }
 
     private fun diagnostics(): String {
@@ -194,6 +290,7 @@ class MainActivity : Activity() {
         val c = HubService.lastClassification
         val age = site?.let { "${(System.currentTimeMillis() - it.at) / 1000}s ago" } ?: "-"
         return buildString {
+            appendLine("Tablet number: ${prefs.tabletNumber}")
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Android API ${Build.VERSION.SDK_INT} (${Build.VERSION.RELEASE}), build ${Build.DISPLAY}")
             appendLine("App version: ${BuildConfig.VERSION_NAME}")
@@ -215,11 +312,12 @@ class MainActivity : Activity() {
     private fun confirmReset() {
         AlertDialog.Builder(this)
             .setTitle("Reset this tablet?")
-            .setMessage("It will disconnect and need a new setup code.")
+            .setMessage("It will disconnect from the hub and need setting up again.")
             .setPositiveButton("Reset") { _, _ ->
                 stopService(Intent(this, HubService::class.java))
                 prefs.forget()
                 HubService.lesson = null
+                mode = null
                 render()
             }
             .setNegativeButton("Cancel", null)
@@ -250,7 +348,7 @@ class MainActivity : Activity() {
         false
     }
 
-    // ---- Tiny view helpers ----------------------------------------------------
+    // ---- Tiny view helpers ------------------------------------------------------------
 
     private fun dp(v: Int) = (v * resources.displayMetrics.density).toInt()
 
@@ -258,7 +356,7 @@ class MainActivity : Activity() {
         this.text = text
         textSize = 24f
         setTypeface(typeface, Typeface.BOLD)
-        setPadding(0, 0, 0, dp(10))
+        setPadding(0, 0, 0, dp(4))
     }
 
     private fun label(text: String) = TextView(this).apply {
@@ -274,6 +372,12 @@ class MainActivity : Activity() {
         setPadding(0, dp(4), 0, dp(4))
     }
 
+    private fun subtle(text: String) = TextView(this).apply {
+        this.text = text
+        textSize = 14f
+        setTextColor(GREY)
+    }
+
     private fun mono(text: String) = TextView(this).apply {
         this.text = text
         textSize = 12f
@@ -281,12 +385,24 @@ class MainActivity : Activity() {
         setTextIsSelectable(true)
     }
 
-    private fun card(text: String, colour: Int) = TextView(this).apply {
-        this.text = text
+    private fun statusLine() = TextView(this).apply {
         textSize = 18f
-        setTextColor(colour)
         setTypeface(typeface, Typeface.BOLD)
-        setPadding(0, dp(6), 0, dp(6))
+        setPadding(0, dp(10), 0, dp(6))
+    }
+
+    private fun errorText() = body("").apply { setTextColor(RED) }
+
+    private fun input(hintText: String, type: Int) = EditText(this).apply {
+        hint = hintText
+        inputType = type
+        setSingleLine()
+    }
+
+    private fun nameInput() = input("e.g. Amy K", InputType.TYPE_CLASS_TEXT or InputType.TYPE_TEXT_FLAG_CAP_WORDS or
+        InputType.TYPE_TEXT_VARIATION_PERSON_NAME).apply {
+        textSize = 22f
+        imeOptions = EditorInfo.IME_ACTION_DONE
     }
 
     private fun checkRow(ok: Boolean, title: String, hint: String, action: String, onClick: () -> Unit): View {
@@ -312,5 +428,6 @@ class MainActivity : Activity() {
         private val GREEN = Color.rgb(31, 138, 76)
         private val RED = Color.rgb(180, 35, 24)
         private val GREY = Color.rgb(93, 102, 118)
+        private val BLUE = Color.rgb(36, 89, 201)
     }
 }

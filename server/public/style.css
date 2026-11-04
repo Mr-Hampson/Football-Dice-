@@ -125,3 +125,21 @@ dialog::backdrop { background: rgba(0, 0, 0, 0.4); }
   .grid { grid-template-columns: repeat(auto-fill, minmax(150px, 1fr)); }
   .topbar h1 { width: 100%; }
 }
+
+/* ---- Shared-tablet lesson layout ---- */
+input.wide { width: 100%; margin: 4px 0 8px; }
+h3 { font-size: 1rem; margin: 14px 0 6px; }
+.lesson-head { display: grid; grid-template-columns: minmax(220px, 320px) 1fr; gap: 14px; }
+.lesson-head .panel { margin-bottom: 14px; }
+.join-panel { text-align: center; }
+.join-label { color: var(--muted); font-weight: 600; text-transform: uppercase; letter-spacing: 0.08em; font-size: 0.8rem; }
+.join-code { font-family: ui-monospace, monospace; font-size: 3.4rem; font-weight: 800; letter-spacing: 0.18em; color: var(--accent); line-height: 1.2; }
+.lesson-info { display: flex; flex-direction: column; gap: 8px; align-items: flex-start; }
+.lesson-info h2 { margin: 0; }
+.action-bar { display: flex; flex-wrap: wrap; gap: 8px; align-items: center; position: sticky; top: 0; z-index: 2; }
+.card .tablet { font-size: 0.82rem; color: var(--muted); font-weight: 600; }
+.card .badge { font-size: 0.8rem; font-weight: 600; color: var(--danger); }
+.card .badge.info { color: var(--unknown); }
+.unjoined { margin-top: 14px; }
+.unjoined .chip { background: var(--off-bg); color: var(--off); padding: 3px 10px; }
+@media (max-width: 700px) { .lesson-head { grid-template-columns: 1fr; } }

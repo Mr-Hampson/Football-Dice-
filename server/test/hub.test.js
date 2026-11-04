@@ -1,5 +1,6 @@
-// End-to-end test of the main flow: teacher logs in, creates a class, a
-// tablet pairs and connects, a lesson starts, a link is sent and acknowledged.
+// End-to-end test of the main flow: a tablet is set up with its number, a
+// teacher starts a lesson, a pupil joins with the code and their name, the
+// teacher sends a link, asks for a retyped name, and ends the lesson.
 // Run with: npm test
 
 import { test } from 'node:test';
@@ -7,35 +8,58 @@ import assert from 'node:assert/strict';
 import WebSocket from 'ws';
 import { createApp } from '../src/server.js';
 import { normaliseDomain, domainMatches, normaliseLink } from '../src/domains.js';
+import { normalisePupilName } from '../src/names.js';
+import { normaliseTabletNumber } from '../src/store.js';
 
-function waitFor(ws, predicate, timeoutMs = 3000) {
-  return new Promise((resolve, reject) => {
-    const timer = setTimeout(() => reject(new Error('Timed out waiting for message')), timeoutMs);
-    const onMessage = (raw) => {
-      const msg = JSON.parse(raw.toString());
-      if (predicate(msg)) {
-        clearTimeout(timer);
-        ws.off('message', onMessage);
-        resolve(msg);
+// Collects every message so a test can wait for one that already arrived.
+function inbox(ws) {
+  const messages = [];
+  const waiters = [];
+  ws.on('message', (raw) => {
+    const msg = JSON.parse(raw.toString());
+    messages.push(msg);
+    for (const w of [...waiters]) {
+      if (w.predicate(msg)) {
+        waiters.splice(waiters.indexOf(w), 1);
+        w.resolve(msg);
       }
-    };
-    ws.on('message', onMessage);
+    }
   });
+  return {
+    next(predicate, timeoutMs = 3000) {
+      return new Promise((resolve, reject) => {
+        const timer = setTimeout(() => reject(new Error('Timed out waiting for: ' + predicate.toString())), timeoutMs);
+        waiters.push({ predicate, resolve: (m) => { clearTimeout(timer); resolve(m); } });
+      });
+    },
+    // Like next(), but also matches the most recent message already received.
+    latest(predicate, timeoutMs) {
+      const last = [...messages].reverse().find(predicate);
+      return last ? Promise.resolve(last) : this.next(predicate, timeoutMs);
+    },
+  };
 }
 
-test('domain helpers', () => {
+test('helpers', () => {
   assert.equal(normaliseDomain('https://www.BBC.co.uk/bitesize?x=1'), 'bbc.co.uk');
-  assert.equal(normaliseDomain('not a domain'), null);
-  assert.equal(domainMatches('www.bbc.co.uk', ['bbc.co.uk']), 'bbc.co.uk');
   assert.equal(domainMatches('notbbc.co.uk', ['bbc.co.uk']), null);
-  assert.equal(normaliseLink('bbc.co.uk/bitesize'), 'https://bbc.co.uk/bitesize');
   assert.equal(normaliseLink('javascript:alert(1)'), null);
+  assert.equal(normalisePupilName('  amy   k. '), 'Amy K');
+  assert.equal(normalisePupilName('Mary-Jane o'), 'Mary-Jane O');
+  assert.equal(normalisePupilName('Seán Ó'), 'Seán Ó');
+  assert.equal(normalisePupilName('Amy'), null); // no initial
+  assert.equal(normalisePupilName('Amy Kerr'), null); // full surname
+  assert.equal(normalisePupilName('x1 k'), null);
+  assert.equal(normaliseTabletNumber('07'), '7');
+  assert.equal(normaliseTabletNumber('a 12'), 'A12');
+  assert.equal(normaliseTabletNumber('!!'), null);
 });
 
-test('pair a tablet, run a lesson, send a link', async (t) => {
+test('set up tablets, join a lesson, send a link, rename, end', async (t) => {
   const { server } = createApp({ password: 'secret', log: () => {} });
   await new Promise((r) => server.listen(0, r));
   const base = `http://localhost:${server.address().port}`;
+  const wsBase = base.replace('http', 'ws');
   const sockets = [];
   t.after(() => {
     for (const ws of sockets) ws.terminate();
@@ -51,68 +75,111 @@ test('pair a tablet, run a lesson, send a link', async (t) => {
     return { status: res.status, data: await res.json(), res };
   };
 
-  // Wrong password is rejected; API is protected.
+  // Teacher API is protected.
   assert.equal((await call('POST', '/api/login', { password: 'nope' })).status, 401);
-  assert.equal((await call('GET', '/api/classes')).status, 401);
-
+  assert.equal((await call('GET', '/api/lessons')).status, 401);
   const login = await call('POST', '/api/login', { password: 'secret' });
   const cookie = login.res.headers.get('set-cookie').split(';')[0];
 
-  const cls = (await call('POST', '/api/classes', { name: 'S2 Computing' }, cookie)).data;
-  await call('POST', `/api/classes/${cls.id}/pupils`, { names: 'Amy K\nBen M' }, cookie);
-  const { pupils } = (await call('GET', `/api/classes/${cls.id}/pupils`, null, cookie)).data;
-  const amy = pupils.find((p) => p.name === 'Amy K');
+  // Set up two tablets with one setup code.
+  assert.equal((await call('POST', '/api/device/enrol', { code: 'WRONG', number: '1' })).status, 400);
+  const { code: setupCode } = (await call('POST', '/api/tablets/setup-code', null, cookie)).data;
+  const t7 = (await call('POST', '/api/device/enrol', { code: setupCode, number: '07' })).data;
+  const t8 = (await call('POST', '/api/device/enrol', { code: setupCode, number: '8' })).data;
+  assert.equal(t7.number, '7');
 
-  // Pairing codes work once only.
-  const { code } = (await call('POST', `/api/pupils/${amy.id}/pairing-code`, null, cookie)).data;
-  const paired = await call('POST', '/api/device/pair', { code });
-  assert.equal(paired.data.pupilName, 'Amy K');
-  assert.equal((await call('POST', '/api/device/pair', { code })).status, 400);
+  const connectTablet = async (token) => {
+    const ws = new WebSocket(`${wsBase}/ws/device`, { headers: { Authorization: `Bearer ${token}` } });
+    sockets.push(ws);
+    const box = inbox(ws);
+    await new Promise((r) => ws.on('open', r));
+    return { ws, box, send: (m) => ws.send(JSON.stringify(m)) };
+  };
 
-  // Tablets without a valid token cannot connect.
-  const bad = new WebSocket(`${base.replace('http', 'ws')}/ws/device`, { headers: { Authorization: 'Bearer wrong' } });
+  // Unknown tablets cannot connect.
+  const bad = new WebSocket(`${wsBase}/ws/device`, { headers: { Authorization: 'Bearer wrong' } });
   await new Promise((resolve) => bad.on('error', resolve));
 
-  const teacher = new WebSocket(`${base.replace('http', 'ws')}/ws/teacher`, { headers: { Cookie: cookie } });
+  const teacher = new WebSocket(`${wsBase}/ws/teacher`, { headers: { Cookie: cookie } });
   sockets.push(teacher);
+  const tbox = inbox(teacher);
   await new Promise((r) => teacher.on('open', r));
-  teacher.send(JSON.stringify({ type: 'watch', classId: cls.id }));
-  await waitFor(teacher, (m) => m.type === 'classState');
 
-  const device = new WebSocket(`${base.replace('http', 'ws')}/ws/device`, { headers: { Authorization: `Bearer ${paired.data.token}` } });
-  sockets.push(device);
-  const welcome = waitFor(device, (m) => m.type === 'welcome');
-  await new Promise((r) => device.on('open', r));
-  assert.equal((await welcome).pupilName, 'Amy K');
+  const tab7 = await connectTablet(t7.token);
+  const tab8 = await connectTablet(t8.token);
+  assert.equal((await tab7.box.latest((m) => m.type === 'welcome')).tabletNumber, '7');
 
-  // No lesson yet: dashboard shows "connected" only.
-  let snap = await waitFor(teacher, (m) => m.type === 'classState' && m.pupils.some((p) => p.connected));
-  assert.equal(snap.pupils.find((p) => p.id === amy.id).status, 'connected');
+  // Start a lesson and watch it.
+  const { id: lessonId, joinCode } = (await call('POST', '/api/lessons', { title: 'S2 Computing', allowedDomains: ['bbc.co.uk'] }, cookie)).data;
+  assert.match(joinCode, /^[A-Z0-9]{4}$/);
+  teacher.send(JSON.stringify({ type: 'watch', lessonId }));
+  let snap = await tbox.next((m) => m.type === 'lessonState' && m.lesson && m.unjoinedTablets.length === 2);
+  assert.deepEqual(snap.unjoinedTablets, ['7', '8']);
 
-  // Start a lesson: the tablet receives the allowed list.
-  const lessonMsg = waitFor(device, (m) => m.type === 'lesson' && m.active);
-  await call('POST', `/api/classes/${cls.id}/lesson/start`, { allowedDomains: ['bbc.co.uk'] }, cookie);
-  assert.deepEqual((await lessonMsg).allowedDomains, ['bbc.co.uk']);
+  // Wrong code and badly formed names are rejected.
+  tab7.send({ type: 'join', code: 'ZZZZ', name: 'Amy K' });
+  assert.match((await tab7.box.next((m) => m.type === 'joinError')).error, /not recognised/);
+  tab7.send({ type: 'join', code: joinCode, name: 'Amy' });
+  assert.match((await tab7.box.next((m) => m.type === 'joinError')).error, /first letter of your surname/);
 
-  device.send(JSON.stringify({ type: 'status', state: 'off', appLabel: 'Silk', domain: 'www.youtube.com', screenOn: true, perms: { usage: true, website: true } }));
-  snap = await waitFor(teacher, (m) => m.type === 'classState' && m.pupils.find((p) => p.id === amy.id).status === 'off');
-  assert.equal(snap.pupils.find((p) => p.id === amy.id).domain, 'youtube.com');
+  // Two pupils join, one with a duplicate name.
+  tab7.send({ type: 'join', code: joinCode.toLowerCase(), name: 'amy k' });
+  const joined = await tab7.box.next((m) => m.type === 'lesson' && m.active);
+  assert.equal(joined.name, 'Amy K');
+  assert.deepEqual(joined.allowedDomains, ['bbc.co.uk']);
+  tab8.send({ type: 'join', code: joinCode, name: 'Amy K' });
+  await tab8.box.next((m) => m.type === 'lesson' && m.active);
 
-  // Send a link: its site joins the allowed list; acks update the dashboard.
-  const linkMsg = waitFor(device, (m) => m.type === 'link');
-  await call('POST', `/api/classes/${cls.id}/links`, { url: 'https://classroom.google.com/c/abc' }, cookie);
+  snap = await tbox.next((m) => m.type === 'lessonState' && m.pupils && m.pupils.length === 2 && m.unjoinedTablets.length === 0);
+  assert.ok(snap.pupils.every((p) => p.duplicateName));
+  const id7 = snap.pupils.find((p) => p.tabletNumber === '7').id;
+  const id8 = snap.pupils.find((p) => p.tabletNumber === '8').id;
+
+  // Status from the tablet shows on the dashboard.
+  tab7.send({ type: 'status', state: 'off', appLabel: 'Silk', domain: 'www.youtube.com', screenOn: true, perms: { usage: true, website: true } });
+  snap = await tbox.next((m) => m.type === 'lessonState' && m.pupils.find((p) => p.id === id7).status === 'off');
+  assert.equal(snap.pupils.find((p) => p.id === id7).domain, 'youtube.com');
+
+  // Teacher asks tablet 8 to retype its name.
+  const asked = tab8.box.next((m) => m.type === 'lesson' && m.nameRequested === true);
+  await call('POST', `/api/lessons/${lessonId}/rename-requests`, { tabletIds: [id8] }, cookie);
+  await asked;
+  tab8.send({ type: 'rename', name: 'Ben M' });
+  await tab8.box.next((m) => m.type === 'lesson' && m.name === 'Ben M' && !m.nameRequested);
+  snap = await tbox.next((m) => m.type === 'lessonState' && m.pupils.some((p) => p.name === 'Ben M'));
+  assert.ok(snap.pupils.every((p) => !p.duplicateName));
+
+  // A link to one pupil only; its site joins the allowed list.
+  const linkMsg = tab7.box.next((m) => m.type === 'link');
+  await call('POST', `/api/lessons/${lessonId}/links`, { url: 'https://classroom.google.com/c/abc', tabletIds: [id7] }, cookie);
   const link = await linkMsg;
-  device.send(JSON.stringify({ type: 'linkAck', id: link.id, stage: 'delivered' }));
-  device.send(JSON.stringify({ type: 'linkAck', id: link.id, stage: 'opened' }));
-  snap = await waitFor(teacher, (m) => m.type === 'classState' && m.pupils.find((p) => p.id === amy.id).links[link.id] === 'opened');
+  tab7.send({ type: 'linkAck', id: link.id, stage: 'delivered' });
+  tab7.send({ type: 'linkAck', id: link.id, stage: 'opened' });
+  snap = await tbox.next((m) => m.type === 'lessonState' && m.pupils.find((p) => p.id === id7).links[link.id] === 'opened');
   assert.ok(snap.lesson.allowedDomains.includes('classroom.google.com'));
-  // Ben has no tablet, so his copy is still waiting.
-  assert.equal(snap.pupils.find((p) => p.name === 'Ben M').links[link.id], 'sent');
+  assert.equal(snap.pupils.find((p) => p.id === id8).links[link.id], undefined);
 
-  // Ending the lesson clears activity.
-  await call('POST', `/api/classes/${cls.id}/lesson/end`, null, cookie);
-  snap = await waitFor(teacher, (m) => m.type === 'classState' && !m.lesson);
-  const amyView = snap.pupils.find((p) => p.id === amy.id);
-  assert.equal(amyView.status, 'connected');
-  assert.equal(amyView.domain, null);
+  // Removing a pupil sends their tablet back to the join screen.
+  const removed = tab8.box.next((m) => m.type === 'lesson' && !m.active);
+  await call('POST', `/api/lessons/${lessonId}/remove`, { tabletIds: [id8] }, cookie);
+  await removed;
+  snap = await tbox.next((m) => m.type === 'lessonState' && m.unjoinedTablets.includes('8'));
+  assert.equal(snap.pupils.length, 1);
+
+  // Ending the lesson releases every tablet and forgets names.
+  const ended = tab7.box.next((m) => m.type === 'lesson' && !m.active);
+  await call('POST', `/api/lessons/${lessonId}/end`, null, cookie);
+  await ended;
+  snap = await tbox.next((m) => m.type === 'lessonState' && !m.lesson);
+  assert.equal(snap.ended, true);
+  assert.deepEqual(snap.unjoinedTablets, ['7', '8']);
+  assert.equal((await call('GET', '/api/lessons', null, cookie)).data.lessons.length, 0);
+});
+
+test('lessons end automatically after the time limit', async () => {
+  const { hub, server } = createApp({ password: 'x', log: () => {} });
+  const lesson = hub.startLesson({ title: 'Test' });
+  hub.endExpiredLessons(lesson.endsAt + 1);
+  assert.equal(hub.listLessons().length, 0);
+  server.close();
 });

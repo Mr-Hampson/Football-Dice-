@@ -1,13 +1,14 @@
 // Entry point: an HTTP server for the teacher dashboard and API, plus two
 // WebSocket endpoints (persistent two-way connections):
 //   /ws/teacher - dashboards receive live class updates
-//   /ws/device  - pupil tablets report status and receive links
+//   /ws/device  - tablets join lessons, report status and receive links
 //
 // Configuration (environment variables):
 //   PORT              port to listen on (default 3000)
 //   TEACHER_PASSWORD  shared teacher password (prototype only - see README)
 //   DATA_DIR          where the JSON data file and audit log live (default ./data)
 //   COOKIE_SECURE     set to "true" when served over HTTPS (it should be!)
+//   LESSON_MAX_MINUTES lessons end automatically after this long (default 120)
 
 import http from 'node:http';
 import fs from 'node:fs';
@@ -69,6 +70,7 @@ export function createApp({
   password,
   dataDir = null,
   cookieSecure = false,
+  lessonMaxMinutes = 120,
   log = console.log,
 } = {}) {
   if (!password) throw new Error('A teacher password is required');
@@ -83,10 +85,10 @@ export function createApp({
     fs.appendFileSync(auditPath, `${JSON.stringify({ at: new Date().toISOString(), action, ...details })}\n`);
   };
 
-  const hub = new Hub(store, audit);
+  const hub = new Hub(store, { audit, lessonMaxMs: lessonMaxMinutes * 60 * 1000 });
   const sessions = new Map(); // token -> expiresAt
   const loginLimiter = makeFailureLimiter(10, 15 * 60 * 1000);
-  const pairLimiter = makeFailureLimiter(30, 15 * 60 * 1000);
+  const setupLimiter = makeFailureLimiter(30, 15 * 60 * 1000);
 
   function isTeacher(req) {
     const token = parseCookies(req.headers.cookie).hub_session;
@@ -168,79 +170,62 @@ export function createApp({
     }],
     ['GET', /^\/api\/me$/, false, async (req, res) => send(res, 200, { teacher: isTeacher(req) })],
 
-    ['GET', /^\/api\/classes$/, true, async (req, res) => send(res, 200, { classes: store.listClasses() })],
-    ['POST', /^\/api\/classes$/, true, async (req, res) => {
-      const cls = store.createClass((await readJson(req)).name || '');
-      audit('class.create', { classId: cls.id, name: cls.name });
-      return send(res, 201, cls);
+    // ---- Lessons (teacher) ----
+    ['GET', /^\/api\/lessons$/, true, async (req, res) => send(res, 200, { lessons: hub.listLessons() })],
+    ['POST', /^\/api\/lessons$/, true, async (req, res) => {
+      const lesson = hub.startLesson(await readJson(req));
+      return send(res, 201, { id: lesson.id, joinCode: lesson.joinCode });
     }],
-    ['DELETE', /^\/api\/classes\/([a-f0-9]+)$/, true, async (req, res, [classId]) => {
-      hub.endLesson(classId);
-      store.deleteClass(classId);
-      audit('class.delete', { classId });
+    ['POST', /^\/api\/lessons\/([a-f0-9]+)\/end$/, true, async (req, res, [lessonId]) => {
+      hub.endLesson(lessonId);
       return send(res, 200, { ok: true });
     }],
-    ['GET', /^\/api\/classes\/([a-f0-9]+)\/pupils$/, true, async (req, res, [classId]) => {
-      const cls = store.getClass(classId);
-      if (!cls) return send(res, 404, { error: 'Class not found' });
-      const pupils = cls.pupilIds.map((id) => ({ ...store.getPupil(id), paired: store.isPupilPaired(id) }));
-      pupils.sort((a, b) => a.name.localeCompare(b.name));
-      return send(res, 200, { class: { id: cls.id, name: cls.name }, pupils });
-    }],
-    ['POST', /^\/api\/classes\/([a-f0-9]+)\/pupils$/, true, async (req, res, [classId]) => {
-      const body = await readJson(req);
-      const names = String(body.names || '').split(/\r?\n/);
-      const added = store.addPupilsToClass(classId, names);
-      audit('class.addPupils', { classId, count: added.length });
-      hub.scheduleBroadcast(classId);
-      return send(res, 200, { added: added.length });
-    }],
-    ['DELETE', /^\/api\/classes\/([a-f0-9]+)\/pupils\/([a-f0-9]+)$/, true, async (req, res, [classId, pupilId]) => {
-      store.removePupilFromClass(classId, pupilId);
-      audit('class.removePupil', { classId, pupilId });
-      hub.scheduleBroadcast(classId);
-      return send(res, 200, { ok: true });
-    }],
-    ['POST', /^\/api\/pupils\/([a-f0-9]+)\/pairing-code$/, true, async (req, res, [pupilId]) => {
-      const entry = store.createPairingCode(pupilId);
-      audit('pupil.pairingCode', { pupilId });
-      return send(res, 200, { code: entry.code, expiresAt: entry.expiresAt });
-    }],
-    ['POST', /^\/api\/pupils\/([a-f0-9]+)\/unpair$/, true, async (req, res, [pupilId]) => {
-      store.unpairPupil(pupilId);
-      const device = hub.devices.get(pupilId);
-      if (device) device.ws.close(4001, 'Unpaired by teacher');
-      audit('pupil.unpair', { pupilId });
-      return send(res, 200, { ok: true });
-    }],
-
-    ['POST', /^\/api\/classes\/([a-f0-9]+)\/lesson\/start$/, true, async (req, res, [classId]) => {
-      const lesson = hub.startLesson(classId, await readJson(req));
-      return send(res, 200, { startedAt: lesson.startedAt });
-    }],
-    ['POST', /^\/api\/classes\/([a-f0-9]+)\/lesson\/end$/, true, async (req, res, [classId]) => {
-      hub.endLesson(classId);
-      return send(res, 200, { ok: true });
-    }],
-    ['PUT', /^\/api\/classes\/([a-f0-9]+)\/lesson\/allowed$/, true, async (req, res, [classId]) => {
-      const lesson = hub.updateAllowed(classId, await readJson(req));
+    ['PUT', /^\/api\/lessons\/([a-f0-9]+)\/allowed$/, true, async (req, res, [lessonId]) => {
+      const lesson = hub.updateAllowed(lessonId, await readJson(req));
       return send(res, 200, { allowedDomains: lesson.allowedDomains, allowedApps: lesson.allowedApps });
     }],
-    ['POST', /^\/api\/classes\/([a-f0-9]+)\/links$/, true, async (req, res, [classId]) => {
-      const link = hub.sendLink(classId, await readJson(req));
+    ['POST', /^\/api\/lessons\/([a-f0-9]+)\/links$/, true, async (req, res, [lessonId]) => {
+      const link = hub.sendLink(lessonId, await readJson(req));
       return send(res, 201, { id: link.id, url: link.url });
     }],
+    ['POST', /^\/api\/lessons\/([a-f0-9]+)\/rename-requests$/, true, async (req, res, [lessonId]) => {
+      hub.requestRename(lessonId, (await readJson(req)).tabletIds);
+      return send(res, 200, { ok: true });
+    }],
+    ['POST', /^\/api\/lessons\/([a-f0-9]+)\/remove$/, true, async (req, res, [lessonId]) => {
+      hub.removeMany(lessonId, (await readJson(req)).tabletIds);
+      return send(res, 200, { ok: true });
+    }],
 
-    // Called by a tablet once, with the code shown on the teacher's Manage page.
-    ['POST', /^\/api\/device\/pair$/, false, async (req, res) => {
-      if (pairLimiter.blocked(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait a few minutes.' });
-      const result = store.redeemPairingCode((await readJson(req)).code);
-      if (!result) {
-        pairLimiter.fail(clientIp(req));
-        return send(res, 400, { error: 'Code not recognised or expired' });
+    // ---- Tablets (teacher / IT) ----
+    ['GET', /^\/api\/tablets$/, true, async (req, res) => send(res, 200, { tablets: hub.tabletsOverview() })],
+    ['POST', /^\/api\/tablets\/setup-code$/, true, async (req, res) => {
+      const entry = store.createSetupCode();
+      audit('tablet.setupCode');
+      return send(res, 200, { code: entry.code, expiresAt: entry.expiresAt });
+    }],
+    ['DELETE', /^\/api\/tablets\/([a-f0-9]+)$/, true, async (req, res, [tabletId]) => {
+      const tablet = store.getTablet(tabletId);
+      hub.forgetTablet(tabletId);
+      store.removeTablet(tabletId);
+      audit('tablet.remove', { number: tablet ? tablet.number : null });
+      return send(res, 200, { ok: true });
+    }],
+
+    // Called once by each tablet during setup, with the school setup code
+    // and the number on the tablet's sticker.
+    ['POST', /^\/api\/device\/enrol$/, false, async (req, res) => {
+      if (setupLimiter.blocked(clientIp(req))) return send(res, 429, { error: 'Too many attempts. Wait a few minutes.' });
+      const body = await readJson(req);
+      const result = store.enrolTablet(body.code, body.number);
+      if (result.error) {
+        if (!store.isValidSetupCode(body.code)) setupLimiter.fail(clientIp(req));
+        return send(res, 400, { error: result.error });
       }
-      audit('device.paired', { pupilId: result.pupil.id });
-      return send(res, 200, { token: result.token, pupilName: result.pupil.name });
+      if (result.replaced) hub.forgetTablet(result.replaced.id);
+      audit('tablet.enrol', { number: result.tablet.number, replacedExisting: !!result.replaced });
+      hub.broadcastAll();
+      return send(res, 200, { token: result.token, number: result.tablet.number });
     }],
   ];
 
@@ -294,9 +279,9 @@ export function createApp({
     } else if (pathname === '/ws/device') {
       const auth = req.headers.authorization || '';
       const token = auth.startsWith('Bearer ') ? auth.slice(7) : null;
-      const pupil = store.pupilForDeviceToken(token);
-      if (!pupil) return reject(401, 'Unauthorized');
-      deviceWss.handleUpgrade(req, socket, head, (ws) => hub.attachDevice(pupil, keepAlive(ws)));
+      const tablet = store.tabletForToken(token);
+      if (!tablet) return reject(401, 'Unauthorized');
+      deviceWss.handleUpgrade(req, socket, head, (ws) => hub.attachDevice(tablet, keepAlive(ws)));
     } else {
       reject(404, 'Not Found');
     }
@@ -315,6 +300,7 @@ export function createApp({
       }
     }
     hub.sweepStaleDevices();
+    hub.endExpiredLessons();
   }, 15_000);
   server.on('close', () => clearInterval(pingTimer));
 
@@ -333,6 +319,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     password,
     dataDir: process.env.DATA_DIR || path.join(here, '..', 'data'),
     cookieSecure: process.env.COOKIE_SECURE === 'true',
+    lessonMaxMinutes: Number(process.env.LESSON_MAX_MINUTES) || 120,
   });
   server.listen(port, () => console.log(`Classroom hub listening on http://localhost:${port}`));
 }

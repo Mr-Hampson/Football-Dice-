@@ -92,13 +92,15 @@ class HubService : Service() {
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         // Must be called after every startForegroundService(), even if running.
         startForeground(NOTIFICATION_ID, buildStatusNotification())
-        if (!prefs.isPaired) {
+        if (!prefs.isSetUp) {
             stopSelf()
             return START_NOT_STICKY
         }
         when (intent?.action) {
             ACTION_LINK_OPENED -> intent.getStringExtra(EXTRA_LINK_ID)?.let { linkAck(it, "opened") }
             ACTION_RECONNECT -> reconnectNow()
+            ACTION_JOIN -> sendJoin("join", intent.getStringExtra(EXTRA_CODE), intent.getStringExtra(EXTRA_NAME))
+            ACTION_RENAME -> sendJoin("rename", null, intent.getStringExtra(EXTRA_NAME))
         }
         if (socket == null) connect()
         return START_STICKY
@@ -184,10 +186,10 @@ class HubService : Service() {
         socket = null
         connected = false
         if (closeCode == 4001 || httpCode == 401) {
-            // The teacher unpaired this tablet (or it was paired to someone else).
+            // The tablet was removed on the dashboard (or set up again elsewhere).
             prefs.forget()
             lesson = null
-            connectionText = "This tablet is no longer set up. Ask your teacher for a new code."
+            connectionText = "This tablet is no longer set up. Ask whoever manages the tablets to set it up again."
             updateNotification()
             stopSelf()
             return
@@ -200,18 +202,25 @@ class HubService : Service() {
     private fun handleMessage(text: String) {
         val msg = try { JSONObject(text) } catch (e: Exception) { return }
         when (msg.optString("type")) {
-            "welcome" -> prefs.pupilName = msg.optString("pupilName")
+            "welcome" -> prefs.tabletNumber = msg.optString("tabletNumber")
             "lesson" -> {
-                lesson = Lesson(
+                val wasAsked = lesson?.nameRequested == true
+                val next = Lesson(
                     active = msg.optBoolean("active"),
-                    className = msg.optString("className"),
+                    title = msg.optString("title"),
+                    name = msg.optString("name"),
+                    nameRequested = msg.optBoolean("nameRequested"),
                     allowedDomains = msg.optJSONArray("allowedDomains").toStringList(),
                     allowedApps = msg.optJSONArray("allowedApps").toStringList(),
                 )
-                if (lesson?.active != true) WebsiteState.latest = null
+                lesson = next
+                if (next.active) joinError = null
+                if (!next.active) WebsiteState.latest = null
+                if (next.nameRequested && !wasAsked) showNamePrompt()
                 updateNotification()
                 sendStatus(force = true)
             }
+            "joinError" -> joinError = msg.optString("error")
             "link" -> {
                 val id = msg.optString("id")
                 val url = msg.optString("url")
@@ -224,6 +233,13 @@ class HubService : Service() {
     }
 
     private fun send(json: JSONObject): Boolean = socket?.send(json.toString()) ?: false
+
+    /** The pupil typed the join code and/or their name on the main screen. */
+    private fun sendJoin(type: String, code: String?, name: String?) {
+        val json = JSONObject().put("type", type).put("name", name.orEmpty())
+        if (code != null) json.put("code", code)
+        joinError = if (send(json)) null else "Not connected to the hub yet. Check the Wi-Fi and try again."
+    }
 
     private fun linkAck(id: String, stage: String) {
         send(JSONObject().put("type", "linkAck").put("id", id).put("stage", stage))
@@ -294,18 +310,19 @@ class HubService : Service() {
     @Suppress("DEPRECATION") // PRIORITY_LOW only matters before Android 8
     private fun buildStatusNotification(): Notification {
         val current = lesson
+        val tablet = prefs.tabletNumber?.let { "Tablet $it" } ?: "Classroom Hub"
         val text = when {
             !connected -> connectionText
             current?.active == true ->
-                "Lesson in progress (${current.className}). Your teacher can see which app and website you are using."
-            else -> "Connected. Nothing is shared outside lessons."
+                "${current.name} · ${current.title}. Your teacher can see which app and website you are using."
+            else -> "$tablet · Not in a lesson. Open Classroom Hub to join. Nothing is shared outside lessons."
         }
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), pendingIntentFlags()
         )
         return notificationBuilder(App.CHANNEL_STATUS, Notification.PRIORITY_LOW)
             .setSmallIcon(R.drawable.ic_notify)
-            .setContentTitle(if (current?.active == true) "Classroom Hub – lesson" else "Classroom Hub")
+            .setContentTitle(if (current?.active == true) "Classroom Hub – in a lesson" else tablet)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
@@ -349,6 +366,20 @@ class HubService : Service() {
         notify(id.hashCode(), notification)
     }
 
+    private fun showNamePrompt() {
+        val pi = PendingIntent.getActivity(this, 2, Intent(this, MainActivity::class.java), pendingIntentFlags())
+        @Suppress("DEPRECATION")
+        val notification = notificationBuilder(App.CHANNEL_LINKS, Notification.PRIORITY_HIGH)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("Your teacher asked you to retype your name")
+            .setContentText("Tap to enter your first name and surname initial")
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .setDefaults(Notification.DEFAULT_ALL)
+            .build()
+        notify(NAME_PROMPT_ID, notification)
+    }
+
     private fun pendingIntentFlags(): Int =
         PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
 
@@ -356,7 +387,12 @@ class HubService : Service() {
         const val ACTION_LINK_OPENED = "uk.school.classroomhub.LINK_OPENED"
         const val ACTION_RECONNECT = "uk.school.classroomhub.RECONNECT"
         const val EXTRA_LINK_ID = "linkId"
+        const val ACTION_JOIN = "uk.school.classroomhub.JOIN"
+        const val ACTION_RENAME = "uk.school.classroomhub.RENAME"
+        const val EXTRA_CODE = "code"
+        const val EXTRA_NAME = "name"
         private const val NOTIFICATION_ID = 1
+        private const val NAME_PROMPT_ID = 2
         private const val STATUS_INTERVAL_MS = 5_000L
         private const val HEARTBEAT_MS = 15_000L
         private const val INITIAL_RETRY_MS = 2_000L
@@ -368,9 +404,24 @@ class HubService : Service() {
         @Volatile var connectionText = "Not started"
         @Volatile var lastForeground: String? = null
         @Volatile var lastClassification: Classification? = null
+        /** Why the last join or rename was refused, shown on the main screen. */
+        @Volatile var joinError: String? = null
 
         fun start(context: Context, action: String? = null) {
             val intent = Intent(context, HubService::class.java).setAction(action)
+            if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
+        }
+
+        fun join(context: Context, code: String, name: String) {
+            start(context, Intent(context, HubService::class.java).setAction(ACTION_JOIN)
+                .putExtra(EXTRA_CODE, code).putExtra(EXTRA_NAME, name))
+        }
+
+        fun rename(context: Context, name: String) {
+            start(context, Intent(context, HubService::class.java).setAction(ACTION_RENAME).putExtra(EXTRA_NAME, name))
+        }
+
+        private fun start(context: Context, intent: Intent) {
             if (Build.VERSION.SDK_INT >= 26) context.startForegroundService(intent) else context.startService(intent)
         }
 

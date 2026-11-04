@@ -17,15 +17,18 @@ level and Fire OS build. Note them down.
 
 - [ ] Settings → Security & Privacy → **Apps from Unknown Sources**: allow the app you'll install from (Silk or Files).
 - [ ] Install the APK. Does Fire OS show any extra warning? Does it install?
-- [ ] On the dashboard, create a test class, add a test pupil, press **Get setup code**, and pair the tablet.
-- [ ] Is the card on the dashboard **Connected** within a few seconds?
+- [ ] On the dashboard's **Tablets** page, press **Get setup code**. On the tablet, enter the hub address, code and the tablet's sticker number.
+- [ ] Does the tablet appear on the Tablets page as **On, not in a lesson**?
+- [ ] Start a lesson. Type the join code and a test name (e.g. "Test A") on the tablet. Does a card appear within a few seconds?
+- [ ] Try a bad name ("Test") and a wrong code. Are the messages clear to a pupil?
+- [ ] Select the card and press **Ask to retype name**. Does the tablet show a notification and the retype screen?
 
 ## 2. Foreground app (Usage access) – the core MVP question
 
 - [ ] In the app, press **Open settings** next to *App tracking*. Does a Usage access screen open?
   - If not, the app explains the USB route. Enable Developer options (Settings → Device Options → About Fire Tablet → tap **Serial Number** seven times; check this on your model), then USB debugging, then run
     `adb shell appops set uk.school.classroomhub GET_USAGE_STATS allow`
-- [ ] Start a lesson on the dashboard. Open Kindle, the home screen and Silk in turn. Does the card follow within about 5–10 seconds?
+- [ ] With the tablet in a lesson, open Kindle, the home screen and Silk in turn. Does the card follow within about 5–10 seconds?
 
 ## 3. Website in Silk (accessibility) – the riskiest part
 
@@ -45,7 +48,7 @@ to `KNOWN_URL_BAR_IDS` in `WebsiteCheckService.kt`.
 
 - [ ] Let the screen turn off for 2 minutes, then wake it. How long until the card returns to **Connected** or **On task**?
 - [ ] Turn Wi-Fi off and on again. Does it reconnect without opening the app?
-- [ ] Restart the tablet. Does it reconnect without opening the app?
+- [ ] Restart the tablet. Does it reconnect, and **stay in the lesson**, without opening the app?
 - [ ] Swipe the app away from recent apps. Does the connection survive?
 - [ ] Leave it connected for a full lesson (about 50 minutes). Is it still connected? What happened to the battery?
 - [ ] Settings → Apps → Classroom Hub → Force stop. Does the dashboard show **Not connected** within about 1 minute? (It should. It can't be prevented.)
@@ -65,6 +68,7 @@ to `KNOWN_URL_BAR_IDS` in `WebsiteCheckService.kt`.
 | Test | Tablet model / Fire OS | Result | Notes |
 |---|---|---|---|
 | Install | | | |
+| Join with code + name; retype request | | | |
 | Usage access (settings screen or adb) | | | |
 | Foreground app accuracy | | | |
 | Silk domain detected | | | `read from` = |
