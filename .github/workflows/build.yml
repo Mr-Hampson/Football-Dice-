@@ -47,6 +47,9 @@ jobs:
             echo "No signing secret set - using a throwaway debug key."
           fi
 
+      - name: Unit tests
+        run: ./gradlew --no-daemon testDebugUnitTest
+
       - name: Build APK
         env:
           HUB_KEYSTORE_PASSWORD: ${{ secrets.HUB_KEYSTORE_PASSWORD }}

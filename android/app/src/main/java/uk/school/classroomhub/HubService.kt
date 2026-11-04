@@ -1,6 +1,7 @@
 package uk.school.classroomhub
 
 import android.app.Notification
+import android.app.NotificationManager
 import android.app.PendingIntent
 import android.app.Service
 import android.content.BroadcastReceiver
@@ -16,8 +17,6 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
-import androidx.core.app.NotificationCompat
-import androidx.core.app.NotificationManagerCompat
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -292,6 +291,7 @@ class HubService : Service() {
 
     // ---- Notifications ------------------------------------------------------
 
+    @Suppress("DEPRECATION") // PRIORITY_LOW only matters before Android 8
     private fun buildStatusNotification(): Notification {
         val current = lesson
         val text = when {
@@ -303,24 +303,33 @@ class HubService : Service() {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), pendingIntentFlags()
         )
-        return NotificationCompat.Builder(this, App.CHANNEL_STATUS)
+        return notificationBuilder(App.CHANNEL_STATUS, Notification.PRIORITY_LOW)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle(if (current?.active == true) "Classroom Hub – lesson" else "Classroom Hub")
             .setContentText(text)
-            .setStyle(NotificationCompat.BigTextStyle().bigText(text))
+            .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setOngoing(true)
-            .setPriority(NotificationCompat.PRIORITY_LOW)
             .build()
     }
 
-    private fun updateNotification() {
+    @Suppress("DEPRECATION") // priority and the no-channel builder are for pre-Android 8 tablets
+    private fun notificationBuilder(channel: String, priority: Int): Notification.Builder =
+        if (Build.VERSION.SDK_INT >= 26) {
+            Notification.Builder(this, channel)
+        } else {
+            Notification.Builder(this).setPriority(priority)
+        }
+
+    private fun notify(id: Int, notification: Notification) {
         try {
-            NotificationManagerCompat.from(this).notify(NOTIFICATION_ID, buildStatusNotification())
+            (getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager).notify(id, notification)
         } catch (e: SecurityException) {
             // Notifications blocked; the service keeps working.
         }
     }
+
+    private fun updateNotification() = notify(NOTIFICATION_ID, buildStatusNotification())
 
     private fun showLinkNotification(id: String, url: String) {
         val open = Intent(this, OpenLinkActivity::class.java)
@@ -328,19 +337,16 @@ class HubService : Service() {
             .putExtra(OpenLinkActivity.EXTRA_URL, url)
         val pi = PendingIntent.getActivity(this, id.hashCode(), open, pendingIntentFlags())
         val host = Uri.parse(url).host ?: url
-        val notification = NotificationCompat.Builder(this, App.CHANNEL_LINKS)
+        @Suppress("DEPRECATION")
+        val notification = notificationBuilder(App.CHANNEL_LINKS, Notification.PRIORITY_HIGH)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle("Your teacher sent you a link")
             .setContentText("Tap to open $host")
             .setContentIntent(pi)
             .setAutoCancel(true)
-            .setPriority(NotificationCompat.PRIORITY_HIGH)
-            .setDefaults(NotificationCompat.DEFAULT_ALL)
+            .setDefaults(Notification.DEFAULT_ALL)
             .build()
-        try {
-            NotificationManagerCompat.from(this).notify(id.hashCode(), notification)
-        } catch (e: SecurityException) {
-        }
+        notify(id.hashCode(), notification)
     }
 
     private fun pendingIntentFlags(): Int =
