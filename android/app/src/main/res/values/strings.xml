@@ -1,0 +1,6 @@
+<?xml version="1.0" encoding="utf-8"?>
+<resources>
+    <string name="app_name">Classroom Hub</string>
+    <string name="website_check_label">Classroom Hub website check</string>
+    <string name="website_check_description">During lessons only, reads the web address shown in the Silk browser so your teacher can see whether you are on a lesson website. It only looks at the browser, never other apps, and only the website name (e.g. bbc.co.uk) is used.</string>
+</resources>

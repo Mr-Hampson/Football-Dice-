@@ -1,0 +1,124 @@
+<!doctype html>
+<html lang="en-GB">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Classroom Hub</title>
+  <link rel="stylesheet" href="/style.css">
+  <script src="/app.js" defer></script>
+</head>
+<body>
+  <header class="topbar">
+    <h1>Classroom Hub</h1>
+    <div class="topbar-controls" id="topbarControls" hidden>
+      <label class="visually-hidden" for="classSelect">Class</label>
+      <select id="classSelect"></select>
+      <button type="button" id="navLesson" class="nav">Lesson</button>
+      <button type="button" id="navManage" class="nav">Classes &amp; tablets</button>
+      <button type="button" id="logoutBtn" class="quiet">Log out</button>
+    </div>
+  </header>
+
+  <!-- Login -->
+  <main id="loginView" class="view narrow" hidden>
+    <form id="loginForm" class="panel">
+      <h2>Teacher log in</h2>
+      <label for="password">Password</label>
+      <input id="password" type="password" autocomplete="current-password" required>
+      <button type="submit" class="primary">Log in</button>
+      <p class="error" id="loginError" role="alert"></p>
+    </form>
+  </main>
+
+  <!-- Lesson dashboard -->
+  <main id="lessonView" class="view" hidden>
+    <p id="noClasses" class="panel empty" hidden>
+      No classes yet. Go to <strong>Classes &amp; tablets</strong> to create one.
+    </p>
+
+    <section id="startPanel" class="panel" hidden>
+      <h2>Start a lesson</h2>
+      <p class="hint">Choose the sites that count as <strong>on task</strong>. Any link you send is added automatically.</p>
+      <div class="presets" id="presetList"></div>
+      <div class="inline-form">
+        <label class="visually-hidden" for="startCustom">Other site</label>
+        <input id="startCustom" placeholder="Another site, e.g. sumdog.com">
+        <button type="button" id="startAddCustom">Add</button>
+      </div>
+      <div class="chips" id="startChips"></div>
+      <button type="button" id="startLessonBtn" class="primary big">Start lesson</button>
+    </section>
+
+    <section id="runningPanel" hidden>
+      <div class="lesson-bar panel">
+        <div class="summary" id="summary" aria-live="polite"></div>
+        <button type="button" id="endLessonBtn" class="danger">End lesson</button>
+      </div>
+
+      <div class="panel send-bar">
+        <form id="linkForm" class="inline-form">
+          <label class="visually-hidden" for="linkInput">Web link to send</label>
+          <input id="linkInput" placeholder="Paste a link to send, e.g. bbc.co.uk/bitesize" autocomplete="off">
+          <button type="submit" class="primary" id="sendAllBtn">Send to whole class</button>
+          <button type="button" id="sendSelectedBtn" disabled>Send to selected (0)</button>
+        </form>
+        <p class="error" id="linkError" role="alert"></p>
+        <div class="allowed">
+          <span class="label">On-task sites:</span>
+          <span class="chips" id="allowedChips"></span>
+          <form id="allowedForm" class="inline-form small">
+            <label class="visually-hidden" for="allowedInput">Add on-task site</label>
+            <input id="allowedInput" placeholder="Add site">
+            <button type="submit">Add</button>
+          </form>
+        </div>
+      </div>
+    </section>
+
+    <section class="grid" id="pupilGrid" aria-label="Pupils"></section>
+    <p class="hint" id="selectionHint" hidden>Tip: tap pupil cards to select them, then use “Send to selected”.</p>
+  </main>
+
+  <!-- Manage classes and tablets -->
+  <main id="manageView" class="view" hidden>
+    <section class="panel">
+      <h2>Classes</h2>
+      <form id="newClassForm" class="inline-form">
+        <label class="visually-hidden" for="newClassName">New class name</label>
+        <input id="newClassName" placeholder="New class name, e.g. S2 Computing" required>
+        <button type="submit" class="primary">Create class</button>
+      </form>
+    </section>
+
+    <section class="panel" id="classDetail" hidden>
+      <h2 id="classDetailTitle"></h2>
+      <form id="addPupilsForm">
+        <label for="pupilNames">Add pupils (one name per line)</label>
+        <textarea id="pupilNames" rows="4" placeholder="Use first name + initial, e.g. Amy K"></textarea>
+        <button type="submit">Add pupils</button>
+      </form>
+      <table class="pupil-table">
+        <thead><tr><th>Pupil</th><th>Tablet</th><th>Actions</th></tr></thead>
+        <tbody id="pupilRows"></tbody>
+      </table>
+      <button type="button" id="deleteClassBtn" class="danger quiet">Delete this class</button>
+    </section>
+
+    <section class="panel hint">
+      <h2>Setting up a tablet</h2>
+      <ol>
+        <li>Install the Classroom Hub app on the tablet (see the README).</li>
+        <li>Press <strong>Get setup code</strong> next to the pupil above.</li>
+        <li>On the tablet, enter the hub address and the code, then follow the on-screen permission steps.</li>
+      </ol>
+    </section>
+  </main>
+
+  <dialog id="codeDialog">
+    <h2>Setup code for <span id="codeName"></span></h2>
+    <p class="code" id="codeValue"></p>
+    <p class="hint">Hub address: <strong id="codeServer"></strong><br>The code works once and expires in 7 days.</p>
+    <form method="dialog"><button class="primary">Done</button></form>
+  </dialog>
+</body>
+</html>

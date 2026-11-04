@@ -1,0 +1,19 @@
+{
+  "name": "classroom-hub-server",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Prototype classroom hub server and teacher dashboard for Fire tablets",
+  "type": "module",
+  "main": "src/server.js",
+  "scripts": {
+    "start": "node src/server.js",
+    "simulate": "node tools/simulate-tablets.js",
+    "test": "node --test test/*.test.js"
+  },
+  "engines": {
+    "node": ">=20"
+  },
+  "dependencies": {
+    "ws": "^8.22.1"
+  }
+}
