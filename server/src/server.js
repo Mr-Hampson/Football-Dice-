@@ -11,6 +11,7 @@
 //   LESSON_MAX_MINUTES lessons end automatically after this long (default 120)
 
 import http from 'node:http';
+import os from 'node:os';
 import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
@@ -321,5 +322,14 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     cookieSecure: process.env.COOKIE_SECURE === 'true',
     lessonMaxMinutes: Number(process.env.LESSON_MAX_MINUTES) || 120,
   });
-  server.listen(port, () => console.log(`Classroom hub listening on http://localhost:${port}`));
+  server.listen(port, () => {
+    console.log(`\nClassroom Hub is running.`);
+    console.log(`  Teacher dashboard (this computer):  http://localhost:${port}`);
+    // Addresses other devices on the same Wi-Fi can use, e.g. for testing a tablet at home.
+    const lan = Object.values(os.networkInterfaces()).flat()
+      .filter((a) => a && a.family === 'IPv4' && !a.internal)
+      .map((a) => `http://${a.address}:${port}`);
+    for (const url of lan) console.log(`  Hub address for tablets on this Wi-Fi: ${url}`);
+    console.log('\nLeave this window open while you use the hub. Press Ctrl+C to stop it.\n');
+  });
 }
