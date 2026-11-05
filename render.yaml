@@ -1,0 +1,35 @@
+# Render "Blueprint": tells Render how to run the hub.
+# Create it in Render with New -> Blueprint, choosing this repository and branch.
+services:
+  - type: web
+    name: classroom-hub
+    runtime: node
+    # Frankfurt is Render's only European region (no UK region).
+    region: frankfurt
+    # Paid plan: the free plan sleeps when idle and has no disk, so tablets
+    # would lose their setup and lessons would drop.
+    plan: starter
+    rootDir: server
+    buildCommand: npm ci
+    startCommand: node src/server.js
+    healthCheckPath: /healthz
+    # Off on purpose: an update restarts the hub, which ends running lessons.
+    # Deploy updates by hand (Manual Deploy) outside lesson times.
+    autoDeploy: false
+    envVars:
+      - key: NODE_VERSION
+        value: "22"
+      # A random password is created for you: see the service's Environment tab.
+      - key: TEACHER_PASSWORD
+        generateValue: true
+      - key: COOKIE_SECURE
+        value: "true"
+      - key: TRUST_PROXY
+        value: "true"
+      - key: DATA_DIR
+        value: /var/data
+    # Keeps the list of set-up tablets across restarts (no pupil data).
+    disk:
+      name: hub-data
+      mountPath: /var/data
+      sizeGB: 1

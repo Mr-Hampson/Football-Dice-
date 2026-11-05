@@ -9,6 +9,7 @@
 //   DATA_DIR          where the JSON data file and audit log live (default ./data)
 //   COOKIE_SECURE     set to "true" when served over HTTPS (it should be!)
 //   LESSON_MAX_MINUTES lessons end automatically after this long (default 120)
+//   TRUST_PROXY       set to "true" when running behind a hosting proxy (Render)
 
 import http from 'node:http';
 import os from 'node:os';
@@ -72,6 +73,7 @@ export function createApp({
   dataDir = null,
   cookieSecure = false,
   lessonMaxMinutes = 120,
+  trustProxy = false,
   log = console.log,
 } = {}) {
   if (!password) throw new Error('A teacher password is required');
@@ -102,7 +104,15 @@ export function createApp({
     return true;
   }
 
+  // Behind a hosting service's proxy (e.g. Render), every request arrives
+  // from the proxy, so use the address the proxy recorded instead. We take
+  // the LAST X-Forwarded-For entry: the one the proxy itself added, which a
+  // client cannot fake.
   function clientIp(req) {
+    if (trustProxy) {
+      const forwarded = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
+      if (forwarded.length) return forwarded[forwarded.length - 1];
+    }
     return req.socket.remoteAddress || 'unknown';
   }
 
@@ -321,6 +331,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     dataDir: process.env.DATA_DIR || path.join(here, '..', 'data'),
     cookieSecure: process.env.COOKIE_SECURE === 'true',
     lessonMaxMinutes: Number(process.env.LESSON_MAX_MINUTES) || 120,
+    trustProxy: process.env.TRUST_PROXY === 'true',
   });
   server.listen(port, () => {
     console.log(`\nClassroom Hub is running.`);

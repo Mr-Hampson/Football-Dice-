@@ -21,6 +21,12 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 | School public Wi-Fi | **No sign-in page**; it just connects [Confirmed] |
 | Existing app with Usage access | **"System Status Manager"** v1.0727.0 (9.63 MB) already has Usage access. It has **no Uninstall option**, so it's part of the system software. Almost certainly Amazon's own, since a school-installed app could always be uninstalled without MDM [Reasonable assumption]. Amazon doesn't document it publicly. The app's *Technical details* will show its package name to confirm. |
 
+### Hosting for the trial
+- **Render**, Starter plan + 1 GB disk, **Frankfurt (EU)** region [Chosen: the easiest option]. Render has no UK region; EU hosting needs DPO sign-off.
+- Rejected the free plan: it sleeps after about 15 minutes idle and has no persistent disk.
+- **Automatic deploys are off**: an update restarts the hub and ends running lessons, so deploy manually outside lesson times.
+- Behind Render's proxy, login/setup lockouts use the client address the proxy records, so one person's wrong passwords don't lock out every teacher.
+
 ### Distribution for the trial
 - Each build is published as a **public GitHub Release**, so tablets can install it from Silk without a GitHub account [Agreed, trial only]. A move to a locked-down, private distribution is required if the project goes commercial.
 - Builds are signed with a **permanent school key** held in GitHub secrets (from Test build 6), so updates install over older versions. The key holder must keep a backup [Confirmed].

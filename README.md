@@ -110,17 +110,31 @@ The full checklist is in [docs/tablet-test-plan.md](docs/tablet-test-plan.md). I
      `adb shell appops set uk.school.classroomhub GET_USAGE_STATS allow`
    - **Website check**: Settings → Accessibility → *Classroom Hub website check* → On.
 
-## Host the hub
+## Host the hub (Render)
 
-The tablets are on public Wi-Fi, so the hub must be reachable on the internet
-over **HTTPS**. Any host that can run a Docker container with a small
-persistent disk works (`server/Dockerfile`):
+The tablets are on public Wi-Fi, so the hub must be on the internet over
+HTTPS. Teachers then just open its web address; nobody installs anything.
+The repository includes `render.yaml`, which sets everything up on
+[Render](https://render.com):
 
-- Set `TEACHER_PASSWORD` to a long password, and `COOKIE_SECURE=true`.
-- Mount persistent storage at `/data`.
-- Pick a UK or EU data-centre region, and confirm the host with the DPO.
+1. Sign up at render.com using **Sign in with GitHub**.
+2. Choose **New → Blueprint**, pick this repository and the branch
+   `claude/fire-tablets-classroom-system-trytro`, then **Apply**.
+3. Wait for the first deploy (a few minutes). The hub's address is shown at
+   the top of the service page, e.g. `https://classroom-hub-xxxx.onrender.com`.
+4. The teacher password is in the service's **Environment** tab
+   (`TEACHER_PASSWORD`). You can change it there.
 
-`http://` only works for local testing. Never use it with real pupils.
+What it sets up: the Starter plan plus a 1 GB disk, in Frankfurt (EU). Render
+has no UK region; confirm the location with the DPO. The disk holds only the
+list of set-up tablets.
+
+**Updating the hub:** automatic deploys are off, because an update restarts the
+hub and ends any running lessons. After changes are pushed, press
+**Manual Deploy → Deploy latest commit** on Render, outside lesson times.
+
+The `server/Dockerfile` is there for any other host that runs containers.
+`http://` is only for testing on a home network. Never use it with real pupils.
 
 ## Known limitations (prototype)
 

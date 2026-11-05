@@ -183,3 +183,19 @@ test('lessons end automatically after the time limit', async () => {
   assert.equal(hub.listLessons().length, 0);
   server.close();
 });
+
+test('behind a proxy, wrong passwords only lock out the person typing them', async (t) => {
+  const { server } = createApp({ password: 'right', trustProxy: true, log: () => {} });
+  await new Promise((r) => server.listen(0, r));
+  t.after(() => server.close());
+  const base = `http://localhost:${server.address().port}`;
+  const login = (password, ip) => fetch(`${base}/api/login`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': `1.2.3.4, ${ip}` },
+    body: JSON.stringify({ password }),
+  }).then((r) => r.status);
+
+  for (let i = 0; i < 10; i++) assert.equal(await login('wrong', '10.0.0.1'), 401);
+  assert.equal(await login('right', '10.0.0.1'), 429); // this person is locked out
+  assert.equal(await login('right', '10.0.0.2'), 200); // other teachers are not
+});
