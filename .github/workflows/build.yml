@@ -60,6 +60,16 @@ jobs:
           HUB_KEY_PASSWORD: ${{ secrets.HUB_KEY_PASSWORD }}
         run: ./gradlew --no-daemon assembleDebug
 
+      # Prints the signing certificate. With the school key it should match
+      # the SHA-256 fingerprint saved alongside the key.
+      - name: Show signing certificate
+        run: |
+          APKSIGNER=$(ls -d "$ANDROID_HOME"/build-tools/* | sort -V | tail -1)/apksigner
+          "$APKSIGNER" verify --print-certs app/build/outputs/apk/debug/*.apk | grep -E "DN|SHA-256"
+          if [ -z "$HUB_KEYSTORE_PATH" ]; then
+            echo "::warning::Signed with a throwaway key: new builds will NOT install over old ones. Add the HUB_* secrets."
+          fi
+
       - uses: actions/upload-artifact@v4
         with:
           name: classroom-hub-pupil-apk

@@ -93,7 +93,10 @@ choose **Build → Build APK(s)**.
 **Use the same signing key for every build.** Otherwise each new version has
 to be uninstalled first, and the permissions set up again. Create a key once
 and add it as repository secrets: `HUB_KEYSTORE_BASE64`, `HUB_KEYSTORE_PASSWORD`,
-`HUB_KEY_ALIAS` and `HUB_KEY_PASSWORD`.
+`HUB_KEY_ALIAS` and `HUB_KEY_PASSWORD`. The build log step *Show signing
+certificate* prints the key's SHA-256 fingerprint, so you can check every
+build used it. **Back up the key.** If it's lost, every tablet needs the app
+uninstalled and set up again.
 
 ## Set up a Fire tablet
 
