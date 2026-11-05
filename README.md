@@ -77,8 +77,15 @@ Run the automated tests with `npm test`.
 
 ## Get the pupil app (APK)
 
-GitHub builds it automatically on every push: **Actions → Build and test →
-latest run → Artifacts → `classroom-hub-pupil-apk`**.
+GitHub builds it automatically on every push.
+
+**On a tablet (no GitHub account needed):** open this link in Silk, then tap **Install**:
+https://github.com/Mr-Hampson/Football-Dice-/releases/latest/download/classroom-hub.apk
+
+Every build is also listed on the repository's **Releases** page. Releases
+are public; this is for the school trial only. Make the repository private,
+or remove the `release` job in `.github/workflows/build.yml`, before any
+wider or commercial use.
 
 To build it yourself, install Android Studio, open the `android` folder, then
 choose **Build → Build APK(s)**.

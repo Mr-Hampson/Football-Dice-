@@ -5,6 +5,9 @@ on:
   pull_request:
   workflow_dispatch:
 
+permissions:
+  contents: read
+
 jobs:
   server:
     name: Server tests
@@ -61,3 +64,36 @@ jobs:
         with:
           name: classroom-hub-pupil-apk
           path: android/app/build/outputs/apk/debug/*.apk
+
+  # Trial-only: publish each APK as a GitHub Release so it can be downloaded
+  # in Silk on a tablet without a GitHub account. Anyone can download it
+  # (it is useless without the hub's setup code). Remove this job, or make
+  # the repository private, before any wider or commercial use.
+  release:
+    name: Publish test release
+    needs: [server, android]
+    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          name: classroom-hub-pupil-apk
+          path: apk
+      - name: Name the APK
+        run: mv apk/*.apk classroom-hub.apk
+      - uses: softprops/action-gh-release@v2
+        with:
+          tag_name: test-build-${{ github.run_number }}
+          name: Test build ${{ github.run_number }}
+          target_commitish: ${{ github.sha }}
+          make_latest: true
+          files: classroom-hub.apk
+          body: |
+            Trial build of the Classroom Hub pupil app, for testing only.
+
+            **Install on a Fire tablet:** open this page in Silk, tap `classroom-hub.apk`, then tap Install.
+            Short link to the newest build: https://github.com/${{ github.repository }}/releases/latest/download/classroom-hub.apk
+
+            Built from commit ${{ github.sha }}.

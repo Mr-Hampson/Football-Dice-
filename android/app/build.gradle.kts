@@ -19,8 +19,10 @@ android {
         // Matches Fire OS 8 (Android 11). Raising this changes background,
         // notification and accessibility rules - test on a tablet first.
         targetSdk = 30
-        versionCode = 1
-        versionName = "0.1.0"
+        // Each GitHub build gets a higher number, so Android sees it as newer.
+        val buildNumber = System.getenv("GITHUB_RUN_NUMBER")?.toIntOrNull() ?: 1
+        versionCode = buildNumber
+        versionName = "0.1.$buildNumber"
     }
 
     signingConfigs {
