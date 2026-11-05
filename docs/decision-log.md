@@ -5,6 +5,11 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 
 ## v0.4 – shared tablets and join codes (current)
 
+### Device confirmed
+- **Fire HD 10 (13th Generation, 2023)** [Confirmed by the school]. Amazon lists it as **Fire OS 8, based on Android 11 (API 30)**, with security updates committed to at least 31 Dec 2029 [Confirmed, Amazon docs]. To be double-checked on a real tablet via the app's *Technical details* screen.
+- The app's `targetSdk 30` matches this exactly. Android 13's restriction on accessibility services in sideloaded apps doesn't apply on Android 11.
+- Still unknown: whether **every** school tablet is this model.
+
 ### Changed requirements (agreed)
 - **Tablets are shared, not individual** [Confirmed]. They are **numbered**, and pupils don't use the same one each time. *Supersedes the v0.3 "individual tablets" requirement.*
 - **Several lessons can run at the same time** in different rooms [Confirmed].
@@ -64,7 +69,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - **School network or web-filter logs** [Rejected]: the tablets are on public Wi-Fi with no filter logs we control.
 
 ### Outstanding questions
-1. Exact tablet model(s) and Fire OS version(s). **Still unanswered and still the most important.**
+1. ~~Exact tablet model~~: Fire HD 10 (13th Gen), Fire OS 8 / API 30. **Still to confirm: is the whole fleet this model?**
 2. Does Fire OS show the Usage access screen, or is USB/adb needed for every tablet? (Test plan §2)
 3. Can Silk's address bar be read reliably? (Test plan §3)
 4. Does the connection survive sleep, Wi-Fi drops and reboots? (Test plan §4)
@@ -81,7 +86,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 | Pupils disable the app or permissions | Gaps in visibility | Can't be prevented without MDM; shown as *Not connected* or *Can't tell* |
 | Setting up every tablet by hand (permissions, possibly USB) | Time per class | Measure in the test; consider an MDM with Fire OS support |
 | Fire OS power management closes the connection | Unreliable status | Foreground service plus reconnect on screen-on or network change; measure in the test |
-| Amazon tablet roadmap (Vega OS / Android tablets) | App stranded | Keep the server and dashboard device-agnostic; only the pupil app is Fire-specific |
+| Amazon tablet roadmap (Vega OS / Android tablets) | App stranded (lower risk: this model is supported until at least 2029) | Keep the server and dashboard device-agnostic; only the pupil app is Fire-specific |
 | Public Wi-Fi captive portal or filtering | Tablets can't connect | Test on site; use HTTPS on port 443 only |
 | Data protection approval | Can't use with pupils | DPIA before any real pupil use; privacy-preserving design |
 
