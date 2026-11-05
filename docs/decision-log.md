@@ -11,6 +11,16 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - **Every school tablet is this model** [Confirmed by the school], so there's one Fire OS version to support.
 - A spare tablet (not used by pupils) is available for the feasibility test.
 
+### Pre-install checks on the spare tablet (5 Nov 2026)
+| Check | Result |
+|---|---|
+| Fire OS version | **8.3.3.8**, the same on every tablet [Confirmed] |
+| Install from unknown sources | **Allowed**, via Silk [Confirmed] |
+| Usage access settings screen | **Visible in Settings** [Confirmed]. No USB/adb step should be needed for app tracking. |
+| Developer options | Available [Confirmed] (fallback only) |
+| School public Wi-Fi | **No sign-in page**; it just connects [Confirmed] |
+| Existing app with Usage access | "System Status Monitor" already has Usage access. **Unknown what it is**: find out who installed it and what it does |
+
 ### Changed requirements (agreed)
 - **Tablets are shared, not individual** [Confirmed]. They are **numbered**, and pupils don't use the same one each time. *Supersedes the v0.3 "individual tablets" requirement.*
 - **Several lessons can run at the same time** in different rooms [Confirmed].
@@ -71,10 +81,10 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 
 ### Outstanding questions
 1. ~~Exact tablet model~~: Fire HD 10 (13th Gen), Fire OS 8 / API 30, the whole fleet. **Resolved.**
-2. Does Fire OS show the Usage access screen, or is USB/adb needed for every tablet? (Test plan §2)
+2. ~~Does Fire OS show the Usage access screen?~~ **Yes.** Still to check: does our app actually report the foreground app? (Test plan §2)
 3. Can Silk's address bar be read reliably? (Test plan §3)
 4. Does the connection survive sleep, Wi-Fi drops and reboots? (Test plan §4)
-5. Does the public Wi-Fi have a sign-in page, or block WebSockets? (Test plan §6)
+5. ~~Does the public Wi-Fi have a sign-in page?~~ **No.** Still to check: are WebSockets to the hub allowed? (Test plan §6)
 6. Who hosts the hub, and where? Local authority approval of a cloud host in a UK or EU region.
 7. DPO: lawful basis, DPIA, transparency to pupils and parents, and whether an accessibility service is acceptable.
 8. Staff sign-in: individual accounts via Glow / Microsoft Entra ID?
@@ -85,7 +95,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 |---|---|---|
 | Silk's address bar can't be read, or breaks after an update | No website info | Domain-level fallback (a local VPN logging DNS) or a custom browser; *Can't tell* is shown honestly |
 | Pupils disable the app or permissions | Gaps in visibility | Can't be prevented without MDM; shown as *Not connected* or *Can't tell* |
-| Setting up every tablet by hand (permissions, possibly USB) | Time per class | Measure in the test; consider an MDM with Fire OS support |
+| Setting up every tablet by hand (permissions) | Time per tablet | Lower risk: no USB needed, since Usage access is in Settings. Measure the time in the test. |
 | Fire OS power management closes the connection | Unreliable status | Foreground service plus reconnect on screen-on or network change; measure in the test |
 | Amazon tablet roadmap (Vega OS / Android tablets) | App stranded (lower risk: this model is supported until at least 2029) | Keep the server and dashboard device-agnostic; only the pupil app is Fire-specific |
 | Public Wi-Fi captive portal or filtering | Tablets can't connect | Test on site; use HTTPS on port 443 only |
