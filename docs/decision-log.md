@@ -8,7 +8,8 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 ### Device confirmed
 - **Fire HD 10 (13th Generation, 2023)** [Confirmed by the school]. Amazon lists it as **Fire OS 8, based on Android 11 (API 30)**, with security updates committed to at least 31 Dec 2029 [Confirmed, Amazon docs]. To be double-checked on a real tablet via the app's *Technical details* screen.
 - The app's `targetSdk 30` matches this exactly. Android 13's restriction on accessibility services in sideloaded apps doesn't apply on Android 11.
-- Still unknown: whether **every** school tablet is this model.
+- **Every school tablet is this model** [Confirmed by the school], so there's one Fire OS version to support.
+- A spare tablet (not used by pupils) is available for the feasibility test.
 
 ### Changed requirements (agreed)
 - **Tablets are shared, not individual** [Confirmed]. They are **numbered**, and pupils don't use the same one each time. *Supersedes the v0.3 "individual tablets" requirement.*
@@ -69,7 +70,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - **School network or web-filter logs** [Rejected]: the tablets are on public Wi-Fi with no filter logs we control.
 
 ### Outstanding questions
-1. ~~Exact tablet model~~: Fire HD 10 (13th Gen), Fire OS 8 / API 30. **Still to confirm: is the whole fleet this model?**
+1. ~~Exact tablet model~~: Fire HD 10 (13th Gen), Fire OS 8 / API 30, the whole fleet. **Resolved.**
 2. Does Fire OS show the Usage access screen, or is USB/adb needed for every tablet? (Test plan §2)
 3. Can Silk's address bar be read reliably? (Test plan §3)
 4. Does the connection survive sleep, Wi-Fi drops and reboots? (Test plan §4)
