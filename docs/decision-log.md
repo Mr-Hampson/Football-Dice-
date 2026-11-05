@@ -23,6 +23,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 
 ### Hosting for the trial
 - **Render**, Starter plan + 1 GB disk, **Frankfurt (EU)** region [Chosen: the easiest option]. Render has no UK region; EU hosting needs DPO sign-off.
+- **Deployed and working** (5 Nov 2026): health check, teacher login and tablet setup codes all checked by the school. The address is kept out of this public repository.
 - Rejected the free plan: it sleeps after about 15 minutes idle and has no persistent disk.
 - **Automatic deploys are off**: an update restarts the hub and ends running lessons, so deploy manually outside lesson times.
 - Behind Render's proxy, login/setup lockouts use the client address the proxy records, so one person's wrong passwords don't lock out every teacher.
