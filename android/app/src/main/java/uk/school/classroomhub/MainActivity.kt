@@ -1,9 +1,12 @@
 package uk.school.classroomhub
 
+import android.Manifest
 import android.app.Activity
 import android.app.AlertDialog
 import android.content.ActivityNotFoundException
 import android.content.Intent
+import android.content.pm.ApplicationInfo
+import android.content.pm.PackageManager
 import android.graphics.Color
 import android.graphics.Typeface
 import android.os.Build
@@ -306,7 +309,30 @@ class MainActivity : Activity() {
             appendLine("  address-bar candidates:")
             if (WebsiteState.candidateIds.isEmpty()) appendLine("    (none yet)")
             WebsiteState.candidateIds.forEach { appendLine("    $it") }
+            appendLine()
+            appendLine("Other apps that can ask for Usage access:")
+            usageAccessApps.forEach { appendLine("  $it") }
         }
+    }
+
+    /**
+     * Apps on this tablet that request the "Usage access" permission, and
+     * whether each is part of the system software. Helps answer "what else
+     * on this tablet can see app usage?" for the DPIA. Worked out once.
+     */
+    private val usageAccessApps: List<String> by lazy {
+        @Suppress("DEPRECATION")
+        val packages = packageManager.getInstalledPackages(PackageManager.GET_PERMISSIONS)
+        packages
+            .filter { it.packageName != packageName }
+            .filter { it.requestedPermissions?.contains(Manifest.permission.PACKAGE_USAGE_STATS) == true }
+            .map { info ->
+                val label = info.applicationInfo?.let { packageManager.getApplicationLabel(it).toString() } ?: "?"
+                val system = (info.applicationInfo?.flags ?: 0) and ApplicationInfo.FLAG_SYSTEM != 0
+                "$label (${info.packageName}, ${if (system) "system app" else "installed app"})"
+            }
+            .sorted()
+            .ifEmpty { listOf("(none)") }
     }
 
     private fun confirmReset() {

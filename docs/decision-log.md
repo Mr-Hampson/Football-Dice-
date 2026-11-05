@@ -19,7 +19,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 | Usage access settings screen | **Visible in Settings** [Confirmed]. No USB/adb step should be needed for app tracking. |
 | Developer options | Available [Confirmed] (fallback only) |
 | School public Wi-Fi | **No sign-in page**; it just connects [Confirmed] |
-| Existing app with Usage access | "System Status Monitor" already has Usage access. **Unknown what it is**: find out who installed it and what it does |
+| Existing app with Usage access | **"System Status Manager"** v1.0727.0 (9.63 MB) already has Usage access. It has **no Uninstall option**, so it's part of the system software. Almost certainly Amazon's own, since a school-installed app could always be uninstalled without MDM [Reasonable assumption]. Amazon doesn't document it publicly. The app's *Technical details* will show its package name to confirm. |
 
 ### Changed requirements (agreed)
 - **Tablets are shared, not individual** [Confirmed]. They are **numbered**, and pupils don't use the same one each time. *Supersedes the v0.3 "individual tablets" requirement.*
