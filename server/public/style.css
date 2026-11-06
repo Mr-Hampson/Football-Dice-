@@ -143,3 +143,5 @@ h3 { font-size: 1rem; margin: 14px 0 6px; }
 .unjoined { margin-top: 14px; }
 .unjoined .chip { background: var(--off-bg); color: var(--off); padding: 3px 10px; }
 @media (max-width: 700px) { .lesson-head { grid-template-columns: 1fr; } }
+
+.conn-msg { background: var(--idle-bg); color: var(--idle); border-color: transparent; }

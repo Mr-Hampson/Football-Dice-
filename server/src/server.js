@@ -183,6 +183,12 @@ export function createApp({
 
     // ---- Lessons (teacher) ----
     ['GET', /^\/api\/lessons$/, true, async (req, res) => send(res, 200, { lessons: hub.listLessons() })],
+    // Same data the dashboard normally gets over its live connection. Used
+    // as a fallback when a network blocks WebSockets.
+    ['GET', /^\/api\/state$/, true, async (req, res) => {
+      const lessonId = new URL(req.url, 'http://localhost').searchParams.get('lessonId');
+      return send(res, 200, hub.lessonState(lessonId && /^[a-f0-9]{16}$/.test(lessonId) ? lessonId : null));
+    }],
     ['POST', /^\/api\/lessons$/, true, async (req, res) => {
       const lesson = hub.startLesson(await readJson(req));
       return send(res, 201, { id: lesson.id, joinCode: lesson.joinCode });

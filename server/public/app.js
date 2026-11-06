@@ -32,6 +32,8 @@ const state = {
   startDomains: [],
   ws: null,
   wsRetry: 1000,
+  live: false, // is the WebSocket open?
+  pollTimer: null, // fallback refresh when WebSockets are blocked
 };
 
 // ---- Small helpers ---------------------------------------------------------
@@ -107,6 +109,9 @@ function showLogin() {
     state.ws.close();
     state.ws = null;
   }
+  state.live = false;
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = null;
 }
 
 function setView(view) {
@@ -126,24 +131,14 @@ function connect() {
   state.ws = ws;
   ws.onopen = () => {
     state.wsRetry = 1000;
+    state.live = true;
+    stopPolling();
     watch(state.lessonId);
   };
-  ws.onmessage = (event) => {
-    const msg = JSON.parse(event.data);
-    if (msg.type !== 'lessonState' || msg.lessonId !== state.lessonId) return;
-    if (msg.ended) {
-      // Our lesson finished (ended elsewhere or hit the time limit).
-      state.lessonId = null;
-      store('lessonId', null);
-      msg.lessonId = null;
-    }
-    state.snap = msg;
-    // Forget selections of pupils who have left.
-    const ids = new Set((msg.pupils || []).map((p) => p.id));
-    for (const id of state.selected) if (!ids.has(id)) state.selected.delete(id);
-    render();
-  };
+  ws.onmessage = (event) => handleState(JSON.parse(event.data));
   ws.onclose = () => {
+    state.live = false;
+    startPolling();
     // Reconnect automatically, waiting a little longer each time.
     setTimeout(async () => {
       const { teacher } = await fetch('/api/me').then((r) => r.json()).catch(() => ({ teacher: true }));
@@ -152,6 +147,48 @@ function connect() {
     }, state.wsRetry);
     state.wsRetry = Math.min(state.wsRetry * 2, 15000);
   };
+  // Some school networks hold WebSocket connections open without ever
+  // connecting. Don't wait forever: fall back to polling after 5 seconds.
+  setTimeout(() => { if (state.ws === ws && !state.live) startPolling(); }, 5000);
+}
+
+// Fallback: ask the hub for the latest state every few seconds over
+// ordinary web requests, which web filters allow.
+function startPolling() {
+  if (state.pollTimer) return;
+  state.pollTimer = setInterval(poll, 3000);
+  poll();
+  render();
+}
+
+function stopPolling() {
+  if (state.pollTimer) clearInterval(state.pollTimer);
+  state.pollTimer = null;
+  render();
+}
+
+async function poll() {
+  try {
+    const query = state.lessonId ? `?lessonId=${encodeURIComponent(state.lessonId)}` : '';
+    handleState(await api('GET', `/api/state${query}`));
+  } catch {
+    /* offline or logged out: try again next time */
+  }
+}
+
+function handleState(msg) {
+  if (msg.type !== 'lessonState' || msg.lessonId !== state.lessonId) return;
+  if (msg.ended) {
+    // Our lesson finished (ended elsewhere or hit the time limit).
+    state.lessonId = null;
+    store('lessonId', null);
+    msg.lessonId = null;
+  }
+  state.snap = msg;
+  // Forget selections of pupils who have left.
+  const ids = new Set((msg.pupils || []).map((p) => p.id));
+  for (const id of state.selected) if (!ids.has(id)) state.selected.delete(id);
+  render();
 }
 
 function watch(lessonId) {
@@ -163,6 +200,8 @@ function watch(lessonId) {
   store('lessonId', lessonId);
   if (state.ws && state.ws.readyState === WebSocket.OPEN) {
     state.ws.send(JSON.stringify({ type: 'watch', lessonId }));
+  } else if (state.pollTimer) {
+    poll();
   }
   render();
 }
@@ -172,6 +211,11 @@ function watch(lessonId) {
 function render() {
   if (state.view !== 'lesson') return;
   const snap = state.snap;
+  // Say what's happening instead of showing a blank page.
+  $('connMsg').hidden = !!snap && !state.pollTimer;
+  $('connMsg').textContent = !snap
+    ? 'Connecting to the hub…'
+    : 'Live updates are blocked on this network, so the dashboard refreshes every few seconds instead.';
   const lesson = snap && snap.lesson;
   $('startPanel').hidden = !snap || !!lesson;
   $('runningPanel').hidden = !lesson;
