@@ -97,6 +97,7 @@ class MainActivity : Activity() {
     override fun onResume() {
         super.onResume()
         if (prefs.isSetUp) HubService.start(this)
+        checkForUpdate()
         mode = null // rebuild once on return, e.g. after changing a setting
         handler.post(refresh)
     }
@@ -320,6 +321,20 @@ class MainActivity : Activity() {
         updateUpdateBox()
     }
 
+    /**
+     * Check for a newer app version whenever the app is opened (outside
+     * lessons), not just when the background service starts. At most once a
+     * minute, so switching back and forth doesn't keep asking the hub.
+     */
+    private fun checkForUpdate() {
+        val hub = prefs.serverUrl ?: return
+        if (HubService.lesson?.active == true) return
+        val now = System.currentTimeMillis()
+        if (now - lastUpdateCheck < 60_000) return
+        lastUpdateCheck = now
+        Updater.check(hub) { runOnUiThread { lastUpdateKey = ""; render() } }
+    }
+
     /** "Update available" card, shown outside lessons only. */
     private fun updateUpdateBox() {
         val box = updateBox ?: return
@@ -503,6 +518,7 @@ class MainActivity : Activity() {
     }
 
     companion object {
+        private var lastUpdateCheck = 0L
         private val GREEN = Color.rgb(31, 138, 76)
         private val RED = Color.rgb(180, 35, 24)
         private val GREY = Color.rgb(93, 102, 118)
