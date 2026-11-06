@@ -108,7 +108,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 2. ~~Does Fire OS show the Usage access screen?~~ **Yes.** Still to check: does our app actually report the foreground app? (Test plan §2)
 3. Can Silk's address bar be read reliably? (Test plan §3)
 4. Does the connection survive sleep, Wi-Fi drops and reboots? (Test plan §4)
-5. ~~Does the public Wi-Fi have a sign-in page?~~ **No.** Still to check: are WebSockets to the hub allowed? (Test plan §6)
+5. ~~Does the public Wi-Fi have a sign-in page?~~ **No.** ~~Are WebSockets to the hub allowed?~~ **Yes:** tablets on the school's public Wi-Fi work fully [Confirmed by the school].
 6. Who hosts the hub, and where? Local authority approval of a cloud host in a UK or EU region.
 7. DPO: lawful basis, DPIA, transparency to pupils and parents, and whether an accessibility service is acceptable.
 8. Staff sign-in: individual accounts via Glow / Microsoft Entra ID?
