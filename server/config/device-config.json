@@ -1,0 +1,8 @@
+{
+  "_comment": "Sent to every tablet when it connects. If a Silk update changes where its address bar is, add the new ID from a tablet's Technical details screen to urlBarIds, then deploy the hub. No app update is needed.",
+  "urlBarIds": [
+    "com.amazon.cloud9:id/url_bar",
+    "com.android.chrome:id/url_bar"
+  ],
+  "urlHints": ["url", "omnibox", "address", "location"]
+}

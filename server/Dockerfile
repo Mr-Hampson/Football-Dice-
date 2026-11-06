@@ -5,6 +5,7 @@ COPY package.json package-lock.json ./
 RUN npm ci --omit=dev
 COPY src ./src
 COPY public ./public
+COPY config ./config
 ENV NODE_ENV=production \
     PORT=3000 \
     DATA_DIR=/data \

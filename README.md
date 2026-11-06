@@ -40,6 +40,11 @@ make outgoing connections over the normal secure web port (443).
 | Message pupils | One-tap or typed messages pop up over any app until the pupil presses OK (✓ received, ✓✓ seen) |
 | Freeze screens | Covers tablets with "Eyes on your teacher" for up to 5 minutes; unfreeze any time |
 | App updates | The app offers "Install update" outside lessons; one confirm tap per tablet |
+| "I need help" | Pupils tap a button in the app or its notification; the card shows ✋ until the teacher presses Done |
+| Needs attention | Cards are highlighted for help requests and pupils off task for 2+ minutes, and can be sorted to the top |
+| Join code on the board | "Show on the board" opens a full-screen code page for the projector |
+| Tablet health | The Tablets page shows app version, battery and permissions, and flags problems |
+| Audit log | Teacher actions, viewable in the dashboard and deleted after 120 days |
 | Received / opened ticks | The tablet confirms when the notification arrives and when it's tapped |
 
 ### Privacy by design
@@ -138,6 +143,13 @@ hub and ends any running lessons. After changes are pushed, press
 
 The `server/Dockerfile` is there for any other host that runs containers.
 `http://` is only for testing on a home network. Never use it with real pupils.
+
+### If Silk changes
+
+If a Silk update stops website detection, open **Technical details** on a tablet,
+note the new ID under *address-bar candidates*, add it to `urlBarIds` in
+`server/config/device-config.json`, then deploy the hub. Every tablet picks it up
+when it next connects, with no app update needed.
 
 ## Known limitations (prototype)
 

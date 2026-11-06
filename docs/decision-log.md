@@ -41,6 +41,16 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - **Changed decision:** device locking was "outside the MVP" in v0.3. It's now in, as a trial feature, at the school's request.
 - **For the DPO:** the audit log records the **text** of staff-to-pupil messages, for safeguarding accountability; confirm or change. Freezing is a new kind of control over pupil devices, so add it to the DPIA and to the pupils' "what your teacher can see" information.
 
+### v0.6 – help button, needs attention, board code, tablet health, audit log, hub settings (agreed)
+- **Teacher logins deferred** [Decided]: one shared password stays for now; individual logins if it scales.
+- **"I need help"** button on the tablet (in the app and in its notification). The card shows ✋ until the teacher presses Done. A signal only, no free text (safeguarding).
+- **Needs attention:** cards are highlighted when a pupil asks for help or has been off task for 2+ minutes, with an optional "Needs attention first" sort.
+- **Join code on the board:** a full-screen projector page showing only the code, lesson name and number joined.
+- **Tablet health page:** app version, battery, permissions and last seen per tablet, with problems flagged. This is about the tablet, not the pupil, so it's kept outside lessons too.
+- **Audit log page**, with entries **deleted after 120 days** (`AUDIT_RETENTION_DAYS`). It's stored as a small file on the hub's disk; it adds no hosting cost. **For the DPO:** confirm the retention period.
+- **Settings sent from the hub** (`server/config/device-config.json`): where Silk's address bar is. A Silk change is fixed with a hub deploy instead of an app update.
+- **Lower data use:** live updates and larger replies are now compressed, to stay inside Render's free 5 GB a month.
+
 ### Before roll-out (deferred by the school until closer to the trial)
 - Update the **walkthrough videos** and **teacher guide** to cover messages and freezing.
 - Update the **pupil poster's** "what your teacher can see" box: the teacher can also send messages and freeze screens for up to 5 minutes. This is needed for transparency before pupils use those features.

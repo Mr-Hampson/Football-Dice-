@@ -13,6 +13,7 @@
     <div class="topbar-controls" id="topbarControls" hidden>
       <button type="button" id="navLesson" class="nav">Lesson</button>
       <button type="button" id="navTablets" class="nav">Tablets</button>
+      <button type="button" id="navAudit" class="nav">Audit log</button>
       <button type="button" id="logoutBtn" class="quiet">Log out</button>
     </div>
   </header>
@@ -56,6 +57,7 @@
           <div class="join-label">Join code</div>
           <div class="join-code" id="joinCode"></div>
           <div class="hint">Open <strong>Classroom Hub</strong> on your tablet, type this code and your name (e.g. Amy K).</div>
+          <button type="button" id="boardBtn" class="small">Show on the board ↗</button>
         </div>
         <div class="panel lesson-info">
           <h2 id="lessonTitleShown"></h2>
@@ -111,6 +113,10 @@
       </div>
     </section>
 
+    <div class="grid-tools" id="gridTools" hidden>
+      <label class="toggle-label"><input type="checkbox" id="attentionFirst"> Needs attention first</label>
+      <span class="hint">Highlighted: asked for help, or off task for over 2 minutes.</span>
+    </div>
     <section class="grid" id="pupilGrid" aria-label="Pupils"></section>
     <p class="hint" id="selectionHint" hidden>Tip: tap pupil cards to select them, then send a link or use the actions above.</p>
 
@@ -135,9 +141,23 @@
     <section class="panel">
       <h2>Tablets</h2>
       <table class="pupil-table">
-        <thead><tr><th>Tablet</th><th>Status</th><th>Last seen</th><th></th></tr></thead>
+        <thead><tr><th>Tablet</th><th>Status</th><th>Last seen</th><th>App</th><th>Battery</th><th>Needs attention</th><th></th></tr></thead>
         <tbody id="tabletRows"></tbody>
       </table>
+    </section>
+  </main>
+
+  <!-- Audit log -->
+  <main id="auditView" class="view" hidden>
+    <section class="panel">
+      <h2>Audit log</h2>
+      <p class="hint" id="auditNote">What teachers have done in the hub, newest first. Pupils' activity is never recorded here.</p>
+      <div class="table-wrap">
+        <table class="pupil-table">
+          <thead><tr><th>When</th><th>What happened</th><th>Details</th></tr></thead>
+          <tbody id="auditRows"></tbody>
+        </table>
+      </div>
     </section>
   </main>
 

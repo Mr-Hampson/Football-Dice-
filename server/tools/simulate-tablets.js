@@ -69,6 +69,7 @@ async function api(method, path, body, cookie) {
 
 function simulateTablet(token, number, name, getJoinCode) {
   let lesson = null;
+  let askedHelp = false;
   let activity = pick();
   let ws;
   const send = (m) => ws && ws.readyState === WebSocket.OPEN && ws.send(JSON.stringify(m));
@@ -83,6 +84,11 @@ function simulateTablet(token, number, name, getJoinCode) {
     ws.on('message', (raw) => {
       const msg = JSON.parse(raw.toString());
       if (msg.type === 'lesson') {
+        // Tablet 4's pupil asks for help 15 seconds after joining (once).
+        if (msg.active && !lesson?.active && number === 4 && !askedHelp) {
+          askedHelp = true;
+          setTimeout(() => send({ type: 'help', on: true }), 15000);
+        }
         lesson = msg;
         if (msg.active && msg.nameRequested) {
           // The pupil fixes their name after a few seconds.

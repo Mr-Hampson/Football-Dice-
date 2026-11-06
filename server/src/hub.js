@@ -24,16 +24,22 @@ const MAX_MESSAGE_LENGTH = 200;
 // Frozen screens always thaw on their own. Teachers can choose 1-10 minutes.
 export const FREEZE_DEFAULT_MINUTES = 5;
 const FREEZE_MAX_MINUTES = 10;
+// A pupil off task for this long is highlighted as needing attention.
+export const ATTENTION_AFTER_MS = 2 * 60 * 1000;
 
 function cleanString(value, max) {
   return typeof value === 'string' ? value.slice(0, max) : null;
 }
 
 export class Hub {
-  constructor(store, { audit = () => {}, lessonMaxMs = 2 * 60 * 60 * 1000 } = {}) {
+  constructor(store, { audit = () => {}, lessonMaxMs = 2 * 60 * 60 * 1000, deviceConfig = {} } = {}) {
     this.store = store;
     this.audit = audit;
     this.lessonMaxMs = lessonMaxMs;
+    // Settings sent to every tablet when it connects (e.g. where Silk's
+    // address bar is), so a Silk change can be fixed here, not in the app.
+    this.deviceConfig = deviceConfig;
+    this.health = new Map(); // tabletId -> { perms, battery, appVersion, versionCode, at } (about the tablet, not the pupil)
     this.lessons = new Map(); // lessonId -> lesson
     this.devices = new Map(); // tabletId -> { ws, lastMessageAt }
     this.lastSeen = new Map(); // tabletId -> timestamp (memory only)
@@ -164,7 +170,7 @@ export class Hub {
     const previous = this.tabletLesson.get(tabletId);
     if (previous && previous !== lesson.id) this.removeFromLesson(previous, tabletId, false);
 
-    lesson.participants.set(tabletId, { name, joinedAt: Date.now(), nameRequested: false });
+    lesson.participants.set(tabletId, { name, joinedAt: Date.now(), nameRequested: false, helpAt: null });
     this.tabletLesson.set(tabletId, lesson.id);
     this.live.delete(tabletId);
     this.sendLessonState(tabletId);
@@ -232,6 +238,7 @@ export class Hub {
       title: lesson.title,
       name: p.name,
       nameRequested: p.nameRequested,
+      helpRequested: !!p.helpAt,
       allowedDomains: lesson.allowedDomains,
       allowedApps: lesson.allowedApps,
       // Time left rather than a clock time, so the tablet's own clock doesn't matter.
@@ -244,6 +251,31 @@ export class Hub {
     return Array.isArray(tabletIds) && tabletIds.length
       ? tabletIds.filter((id) => lesson.participants.has(id))
       : [...lesson.participants.keys()];
+  }
+
+  // ---- "I need help" ------------------------------------------------------------
+
+  // The pupil pressed (or cancelled) "I need help" on their tablet.
+  setHelp(tabletId, on) {
+    const lesson = this.lessonForTablet(tabletId);
+    const p = lesson && lesson.participants.get(tabletId);
+    if (!p) return;
+    p.helpAt = on ? p.helpAt || Date.now() : null;
+    this.sendLessonState(tabletId);
+    this.scheduleBroadcast(lesson.id);
+  }
+
+  // The teacher has seen to it.
+  clearHelp(lessonId, tabletIds) {
+    const lesson = this.getLesson(lessonId);
+    for (const id of this.targetsFor(lesson, tabletIds)) {
+      const p = lesson.participants.get(id);
+      if (p && p.helpAt) {
+        p.helpAt = null;
+        this.sendLessonState(id);
+      }
+    }
+    this.scheduleBroadcast(lessonId);
   }
 
   // ---- Messages --------------------------------------------------------------
@@ -392,6 +424,7 @@ export class Hub {
     });
 
     this.sendToDevice(tablet.id, { type: 'welcome', tabletNumber: tablet.number, serverTime: Date.now() });
+    this.sendToDevice(tablet.id, { type: 'config', ...this.deviceConfig });
     this.sendLessonState(tablet.id);
     this.deliverPendingLinks(tablet.id);
     this.deliverPendingMessages(tablet.id);
@@ -426,7 +459,11 @@ export class Hub {
         break;
       }
       case 'status':
+        this.recordHealth(tabletId, msg);
         this.recordStatus(tabletId, msg);
+        break;
+      case 'help':
+        this.setHelp(tabletId, msg.on === true);
         break;
       case 'messageAck':
         this.recordMessageAck(tabletId, cleanString(msg.id, 40), msg.stage);
@@ -438,6 +475,20 @@ export class Hub {
     }
   }
 
+  // Facts about the tablet itself, kept whether or not it is in a lesson:
+  // they say nothing about any pupil.
+  recordHealth(tabletId, msg) {
+    const versionName = cleanString(msg.appVersion, 20);
+    const fromName = versionName && Number((versionName.match(/(\d+)$/) || [])[1]);
+    this.health.set(tabletId, {
+      perms: { usage: !!(msg.perms && msg.perms.usage), website: !!(msg.perms && msg.perms.website) },
+      battery: Number.isFinite(msg.battery) ? Math.max(0, Math.min(100, Math.round(msg.battery))) : null,
+      appVersion: versionName,
+      versionCode: Number.isInteger(msg.appVersionCode) ? msg.appVersionCode : fromName || null,
+      at: Date.now(),
+    });
+  }
+
   recordStatus(tabletId, msg) {
     const lesson = this.lessonForTablet(tabletId);
     // Outside a lesson we keep nothing about what the tablet is doing.
@@ -446,7 +497,10 @@ export class Hub {
       return;
     }
     const off = msg.state === 'off';
+    const prev = this.live.get(tabletId);
     this.live.set(tabletId, {
+      // When this spell off task began, for "needs attention".
+      offSince: off ? (prev && prev.offSince) || Date.now() : null,
       state: DEVICE_STATES.has(msg.state) ? msg.state : 'unknown',
       screenOn: msg.screenOn !== false,
       appLabel: cleanString(msg.appLabel, 60),
@@ -493,16 +547,29 @@ export class Hub {
     return out.sort((a, b) => a.localeCompare(b, undefined, { numeric: true }));
   }
 
-  tabletsOverview() {
+  // The Tablets page: each tablet's state, with anything that needs fixing.
+  tabletsOverview(latestVersionCode = 0, now = Date.now()) {
     return this.store.listTablets().map((t) => {
       const lesson = this.lessonForTablet(t.id);
+      const h = this.health.get(t.id) || null;
+      const lastSeen = this.lastSeen.get(t.id) || null;
+      const problems = [];
+      if (h && !h.perms.usage) problems.push('App tracking is off');
+      if (h && !h.perms.website) problems.push('Website check is off');
+      if (h && h.battery != null && h.battery <= 20) problems.push(`Battery low (${h.battery}%)`);
+      if (h && latestVersionCode && h.versionCode && h.versionCode < latestVersionCode) problems.push('App needs updating');
+      if (!this.devices.has(t.id) && (!lastSeen || now - lastSeen > 3 * 24 * 60 * 60 * 1000)) problems.push('Not seen for 3+ days');
       return {
         id: t.id,
         number: t.number,
         connected: this.devices.has(t.id),
-        lastSeen: this.lastSeen.get(t.id) || null,
+        lastSeen,
         lessonTitle: lesson ? lesson.title : null,
         enrolledAt: t.enrolledAt,
+        appVersion: h ? h.appVersion : null,
+        battery: h ? h.battery : null,
+        perms: h ? h.perms : null,
+        problems,
       };
     });
   }
@@ -550,6 +617,9 @@ export class Hub {
       links: {},
       messages: {},
       frozen: null,
+      helpRequested: !!participant.helpAt,
+      offForMs: 0,
+      needsAttention: false,
     };
     if (connected) {
       if (!report) view.status = 'unknown';
@@ -563,8 +633,10 @@ export class Hub {
           matched: report.matched,
           detail: report.detail,
         });
+        if (view.status === 'off' && report.offSince) view.offForMs = Date.now() - report.offSince;
       }
     }
+    view.needsAttention = view.helpRequested || view.offForMs >= ATTENTION_AFTER_MS;
     for (const link of lesson.links) {
       if (tabletId in link.targets) view.links[link.id] = link.targets[tabletId];
     }
@@ -602,6 +674,7 @@ export class Hub {
         links: lesson.links.map((l) => ({ id: l.id, url: l.url, sentAt: l.sentAt })),
         messages: lesson.messages.map((m) => ({ id: m.id, text: m.text, sentAt: m.sentAt })),
         frozenCount: lesson.frozen.size,
+        attentionAfterMs: ATTENTION_AFTER_MS,
       },
       pupils,
       serverTime: Date.now(),

@@ -101,7 +101,7 @@ function recall(key) {
 // ---- Views -----------------------------------------------------------------
 
 function showOnly(id) {
-  for (const v of ['loginView', 'lessonView', 'tabletsView']) $(v).hidden = v !== id;
+  for (const v of ['loginView', 'lessonView', 'tabletsView', 'auditView']) $(v).hidden = v !== id;
 }
 
 function showLogin() {
@@ -122,8 +122,10 @@ function setView(view) {
   state.view = view;
   $('navLesson').classList.toggle('active', view === 'lesson');
   $('navTablets').classList.toggle('active', view === 'tablets');
-  showOnly(view === 'lesson' ? 'lessonView' : 'tabletsView');
+  $('navAudit').classList.toggle('active', view === 'audit');
+  showOnly({ lesson: 'lessonView', tablets: 'tabletsView', audit: 'auditView' }[view]);
   if (view === 'tablets') loadTablets();
+  if (view === 'audit') loadAudit();
   render();
 }
 
@@ -270,8 +272,12 @@ function renderRunning(snap) {
 
   const counts = {};
   for (const p of pupils) counts[p.status] = (counts[p.status] || 0) + 1;
+  const attention = pupils.filter((p) => p.needsAttention).length;
+  const help = pupils.filter((p) => p.helpRequested).length;
   $('summary').replaceChildren(
     el('span', { class: 'count s-connected' }, `${pupils.length} joined`),
+    help ? el('span', { class: 'count s-attention' }, `✋ ${help} need${help === 1 ? 's' : ''} help`) : null,
+    attention - help > 0 ? el('span', { class: 'count s-attention' }, `${attention - help} need${attention - help === 1 ? 's' : ''} attention`) : null,
     ...SUMMARY_ORDER.filter((s) => counts[s]).map((s) =>
       el('span', { class: `count s-${s}` }, `${counts[s]} ${STATUS_TEXT[s].toLowerCase()}`)),
   );
@@ -304,7 +310,11 @@ function renderRunning(snap) {
 function cardDetail(p) {
   switch (p.status) {
     case 'on': return p.matched ? `${p.appLabel || 'Browser'} · ${p.matched}` : p.appLabel || '';
-    case 'off': return p.domain ? `${p.appLabel || 'Browser'} · ${p.domain}` : p.appLabel || 'Another app';
+    case 'off': {
+      const what = p.domain ? `${p.appLabel || 'Browser'} · ${p.domain}` : p.appLabel || 'Another app';
+      const mins = Math.floor((p.offForMs || 0) / 60000);
+      return mins >= 1 ? `${what} · ${mins} min` : what;
+    }
     case 'unknown': return p.detail || 'Waiting for the tablet to report';
     case 'offline': return `Last seen ${ago(p.lastSeen)}`;
     case 'asleep': return 'Tablet asleep or locked';
@@ -347,12 +357,19 @@ function renderGrid(snap) {
     grid.replaceChildren();
     return;
   }
+  $('gridTools').hidden = !snap.pupils.length;
   if (!snap.pupils.length) {
     grid.replaceChildren(el('p', { class: 'panel empty' },
       `No one has joined yet. Ask pupils to open Classroom Hub and type the code ${snap.lesson.joinCode}.`));
     return;
   }
-  grid.replaceChildren(...snap.pupils.map((p) => {
+  // Optionally put pupils who need attention first (help, then longest off task).
+  const pupils = [...snap.pupils];
+  if (state.attentionFirst) {
+    const rank = (p) => (p.helpRequested ? 2 : p.needsAttention ? 1 : 0);
+    pupils.sort((a, b) => rank(b) - rank(a) || b.offForMs - a.offForMs);
+  }
+  grid.replaceChildren(...pupils.map((p) => {
     const selected = state.selected.has(p.id);
     const quick = [];
     if (p.status === 'off' && p.domain) {
@@ -365,11 +382,15 @@ function renderGrid(snap) {
     if (p.duplicateName) badges.push(el('div', { class: 'badge' }, '⚠ Same name as another tablet'));
     if (p.nameRequested) badges.push(el('div', { class: 'badge info' }, '✎ Asked to retype name'));
     if (p.frozen) badges.push(el('div', { class: 'badge frozen' }, `❄ Frozen · ${freezeLeft(p)} left`));
+    if (p.helpRequested) {
+      badges.push(el('div', { class: 'badge help' }, '✋ Needs help'));
+      quick.push(el('button', { type: 'button', class: 'small quick', onclick: (e) => { e.stopPropagation(); clearHelp([p.id]); } }, 'Done'));
+    }
     if (p.connected && p.perms && (!p.perms.usage || !p.perms.website)) {
       badges.push(el('div', { class: 'detail' }, !p.perms.usage ? '⚠ App tracking permission off' : '⚠ Website check off'));
     }
     return el('div', {
-      class: `card s-${p.status}${selected ? ' selected' : ''}${p.frozen ? ' is-frozen' : ''}`,
+      class: `card s-${p.status}${selected ? ' selected' : ''}${p.frozen ? ' is-frozen' : ''}${p.helpRequested ? ' help' : p.needsAttention ? ' attention' : ''}`,
       role: 'button',
       tabindex: '0',
       'aria-pressed': selected ? 'true' : 'false',
@@ -455,6 +476,10 @@ async function sendMessage(text, tabletIds) {
   }
 }
 
+function clearHelp(tabletIds) {
+  return guarded(() => api('POST', lessonUrl('/help/clear'), { tabletIds }));
+}
+
 function freeze(tabletIds) {
   return guarded(() => api('POST', lessonUrl('/freeze'), { tabletIds }));
 }
@@ -467,13 +492,60 @@ function unfreeze(tabletIds) {
 
 async function loadTablets() {
   const { tablets } = await api('GET', '/api/tablets');
+  // Tablets with problems first, so they're easy to spot before a lesson.
+  tablets.sort((a, b) => (b.problems.length > 0) - (a.problems.length > 0));
   const rows = tablets.map((t) => el('tr', {},
     el('td', {}, `Tablet ${t.number}`),
     el('td', {}, t.connected ? (t.lessonTitle ? `In lesson: ${t.lessonTitle}` : 'On, not in a lesson') : 'Off / not connected'),
     el('td', {}, t.connected ? 'now' : ago(t.lastSeen)),
+    el('td', {}, t.appVersion || '–'),
+    el('td', {}, t.battery == null ? '–' : `${t.battery}%`),
+    el('td', {}, t.problems.length
+      ? el('span', { class: 'problems' }, `⚠ ${t.problems.join(' · ')}`)
+      : el('span', { class: 'ok-text' }, '✓ All good')),
     el('td', {}, el('button', { type: 'button', class: 'small danger', onclick: () => removeTablet(t) }, 'Remove'))));
   $('tabletRows').replaceChildren(...(rows.length ? rows
-    : [el('tr', {}, el('td', { colspan: '4', class: 'hint' }, 'No tablets set up yet.'))]));
+    : [el('tr', {}, el('td', { colspan: '7', class: 'hint' }, 'No tablets set up yet.'))]));
+}
+
+// ---- Audit log view ---------------------------------------------------------
+
+const AUDIT_LABELS = {
+  'teacher.login': 'Teacher logged in',
+  'teacher.login.failed': 'Wrong password entered',
+  'lesson.start': 'Lesson started',
+  'lesson.end': 'Lesson ended',
+  'lesson.allowed': 'On-task sites changed',
+  'lesson.remove': 'Pupil removed from lesson',
+  'link.send': 'Link sent',
+  'message.send': 'Message sent',
+  'screens.freeze': 'Screens frozen',
+  'screens.unfreeze': 'Screens unfrozen',
+  'tablet.setupCode': 'Tablet setup code created',
+  'tablet.enrol': 'Tablet set up',
+  'tablet.remove': 'Tablet removed',
+};
+
+function auditDetails(e) {
+  const bits = [];
+  if (e.title) bits.push(e.title);
+  if (e.text) bits.push(`“${e.text}”`);
+  if (e.url) bits.push(e.url);
+  if (e.pupilCount != null) bits.push(`${e.pupilCount} pupil${e.pupilCount === 1 ? '' : 's'}`);
+  if (e.minutes) bits.push(`${e.minutes} min`);
+  if (e.number) bits.push(`Tablet ${e.number}`);
+  if (e.reason && e.reason !== 'teacher') bits.push(`(${e.reason})`);
+  if (e.allowedDomains) bits.push(e.allowedDomains.join(', '));
+  return bits.join(' · ');
+}
+
+async function loadAudit() {
+  const { entries, retentionDays } = await api('GET', '/api/audit');
+  $('auditNote').textContent = `What teachers have done in the hub, newest first (last 500). Entries are deleted after ${retentionDays} days. Pupils' activity is never recorded here.`;
+  $('auditRows').replaceChildren(...(entries.length ? entries.map((e) => el('tr', {},
+    el('td', {}, new Date(e.at).toLocaleString('en-GB', { dateStyle: 'short', timeStyle: 'short' })),
+    el('td', {}, AUDIT_LABELS[e.action] || e.action),
+    el('td', {}, auditDetails(e)))) : [el('tr', {}, el('td', { colspan: '3', class: 'hint' }, 'Nothing recorded yet.'))]));
 }
 
 async function removeTablet(t) {
@@ -502,6 +574,17 @@ function wire() {
   });
   $('navLesson').addEventListener('click', () => setView('lesson'));
   $('navTablets').addEventListener('click', () => setView('tablets'));
+  $('navAudit').addEventListener('click', () => setView('audit'));
+  $('boardBtn').addEventListener('click', () => {
+    window.open(`/board.html#${state.lessonId}`, 'classroomHubBoard');
+  });
+  state.attentionFirst = recall('attentionFirst') === '1';
+  $('attentionFirst').checked = state.attentionFirst;
+  $('attentionFirst').addEventListener('change', (e) => {
+    state.attentionFirst = e.target.checked;
+    store('attentionFirst', state.attentionFirst ? '1' : null);
+    render();
+  });
 
   $('startAddCustom').addEventListener('click', () => {
     const d = normaliseDomain($('startCustom').value);

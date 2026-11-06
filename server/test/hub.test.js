@@ -256,3 +256,72 @@ test('messages pop up on tablets, and screens freeze and thaw', async (t) => {
   assert.equal(hub.lessonState(lesson.id).pupils[0].frozen, null);
   assert.equal(tablet.number, '3');
 });
+
+test('help requests, needs-attention, tablet health and tablet settings', async (t) => {
+  const deviceConfig = { urlBarIds: ['com.amazon.cloud9:id/new_bar'], urlHints: ['url'] };
+  const { server, hub, store } = createApp({ password: 'x', releasesApi: null, deviceConfig, log: () => {} });
+  await new Promise((r) => server.listen(0, r));
+  const wsBase = `ws://localhost:${server.address().port}`;
+  const sockets = [];
+  t.after(() => { for (const ws of sockets) ws.terminate(); server.close(); });
+
+  const { code } = store.createSetupCode();
+  const { token, tablet } = store.enrolTablet(code, '5');
+  const ws = new WebSocket(`${wsBase}/ws/device`, { headers: { Authorization: `Bearer ${token}` } });
+  sockets.push(ws);
+  const box = inbox(ws);
+  await new Promise((r) => ws.on('open', r));
+
+  // Settings arrive as soon as the tablet connects.
+  const cfg = await box.latest((m) => m.type === 'config');
+  assert.deepEqual(cfg.urlBarIds, ['com.amazon.cloud9:id/new_bar']);
+
+  // Health is recorded even outside a lesson; problems are flagged.
+  ws.send(JSON.stringify({ type: 'status', state: 'paused', perms: { usage: true, website: false }, battery: 12, appVersion: '0.1.9' }));
+  await new Promise((r) => setTimeout(r, 100));
+  const [row] = hub.tabletsOverview(13);
+  assert.equal(row.number, '5');
+  assert.ok(row.problems.includes('Website check is off'));
+  assert.ok(row.problems.includes('Battery low (12%)'));
+  assert.ok(row.problems.includes('App needs updating'));
+
+  const lesson = hub.startLesson({ title: 'Test', allowedDomains: ['bbc.co.uk'] });
+  ws.send(JSON.stringify({ type: 'join', code: lesson.joinCode, name: 'Amy K' }));
+  await box.next((m) => m.type === 'lesson' && m.active);
+
+  // "I need help": shows on the card until the teacher clears it.
+  const asked = box.next((m) => m.type === 'lesson' && m.helpRequested === true);
+  ws.send(JSON.stringify({ type: 'help', on: true }));
+  await asked;
+  let view = hub.lessonState(lesson.id).pupils[0];
+  assert.ok(view.helpRequested && view.needsAttention);
+  const cleared = box.next((m) => m.type === 'lesson' && m.helpRequested === false);
+  hub.clearHelp(lesson.id);
+  await cleared;
+
+  // Off task for over 2 minutes = needs attention.
+  ws.send(JSON.stringify({ type: 'status', state: 'off', appLabel: 'Silk', domain: 'youtube.com', screenOn: true, perms: { usage: true, website: true } }));
+  await new Promise((r) => setTimeout(r, 100));
+  view = hub.lessonState(lesson.id).pupils[0];
+  assert.equal(view.needsAttention, false);
+  hub.live.get(tablet.id).offSince -= 3 * 60 * 1000; // pretend it has been 3 minutes
+  view = hub.lessonState(lesson.id).pupils[0];
+  assert.ok(view.offForMs >= 3 * 60 * 1000 && view.needsAttention);
+  // Back on task resets the clock.
+  ws.send(JSON.stringify({ type: 'status', state: 'on', appLabel: 'Silk', matched: 'bbc.co.uk', screenOn: true, perms: { usage: true, website: true } }));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(hub.lessonState(lesson.id).pupils[0].needsAttention, false);
+});
+
+test('audit log entries are deleted after the retention period', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-audit-'));
+  const old = new Date(Date.now() - 200 * 24 * 60 * 60 * 1000).toISOString();
+  fs.writeFileSync(path.join(dir, 'audit.log'), `${JSON.stringify({ at: old, action: 'old' })}\n${JSON.stringify({ at: new Date().toISOString(), action: 'new' })}\n`);
+  const { server } = createApp({ password: 'x', dataDir: dir, auditRetentionDays: 120, log: () => {} });
+  const lines = fs.readFileSync(path.join(dir, 'audit.log'), 'utf8').trim().split('\n').map((l) => JSON.parse(l).action);
+  assert.deepEqual(lines, ['new']);
+  server.close();
+});

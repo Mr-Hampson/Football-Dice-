@@ -80,8 +80,8 @@ class WebsiteCheckService : AccessibilityService() {
         val root = rootInActiveWindow ?: return
         if (root.packageName?.toString() != pkg) return
 
-        // 1. Known address-bar IDs.
-        for (id in KNOWN_URL_BAR_IDS) {
+        // 1. Known address-bar IDs: from the hub first, then the built-in ones.
+        for (id in (RemoteConfig.urlBarIds + KNOWN_URL_BAR_IDS).distinct()) {
             if (!id.startsWith("$pkg:")) continue
             for (node in root.findAccessibilityNodeInfosByViewId(id)) {
                 val domain = Classifier.domainFromText(node.text)
@@ -102,7 +102,8 @@ class WebsiteCheckService : AccessibilityService() {
             val node = queue.removeFirst()
             visited++
             val id = node.viewIdResourceName
-            val looksLikeUrlBar = (id != null && URL_HINTS.any { id.contains(it, ignoreCase = true) }) ||
+            val hints = RemoteConfig.urlHints.ifEmpty { URL_HINTS }
+            val looksLikeUrlBar = (id != null && hints.any { id.contains(it, ignoreCase = true) }) ||
                 node.className?.toString() == "android.widget.EditText"
             if (looksLikeUrlBar) {
                 val label = id ?: "EditText(no id)"

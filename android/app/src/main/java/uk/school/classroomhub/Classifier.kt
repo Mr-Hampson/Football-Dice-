@@ -8,6 +8,8 @@ data class Lesson(
     val name: String = "",
     /** The teacher has asked the pupil to type their name again. */
     val nameRequested: Boolean = false,
+    /** The pupil has pressed "I need help" and the teacher hasn't cleared it. */
+    val helpRequested: Boolean = false,
     val allowedDomains: List<String> = emptyList(),
     val allowedApps: List<String> = emptyList(),
 )

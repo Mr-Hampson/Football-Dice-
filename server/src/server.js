@@ -11,6 +11,7 @@
 //   LESSON_MAX_MINUTES lessons end automatically after this long (default 120)
 //   TRUST_PROXY       set to "true" when running behind a hosting proxy (Render)
 //   APP_DOWNLOAD_URL  where /app sends tablets to download the pupil app
+//   AUDIT_RETENTION_DAYS  audit log entries older than this are deleted (default 120)
 
 import http from 'node:http';
 import os from 'node:os';
@@ -18,6 +19,7 @@ import fs from 'node:fs';
 import path from 'node:path';
 import crypto from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import zlib from 'node:zlib';
 import { WebSocketServer } from 'ws';
 import { Store } from './store.js';
 import { Hub } from './hub.js';
@@ -74,6 +76,8 @@ export function createApp({
   dataDir = null,
   cookieSecure = false,
   lessonMaxMinutes = 120,
+  auditRetentionDays = 120,
+  deviceConfig = {},
   trustProxy = false,
   appDownloadUrl = 'https://github.com/Mr-Hampson/Football-Dice-/releases/latest/download/classroom-hub.apk',
   releasesApi = 'https://api.github.com/repos/Mr-Hampson/Football-Dice-/releases/latest',
@@ -90,6 +94,26 @@ export function createApp({
     fs.mkdirSync(dataDir, { recursive: true });
     fs.appendFileSync(auditPath, `${JSON.stringify({ at: new Date().toISOString(), action, ...details })}\n`);
   };
+
+  // Keep the audit log for a fixed period only, then delete old entries.
+  function readAudit() {
+    if (!auditPath || !fs.existsSync(auditPath)) return [];
+    return fs.readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map((line) => {
+      try { return JSON.parse(line); } catch { return null; }
+    }).filter(Boolean);
+  }
+  function pruneAudit(now = Date.now()) {
+    if (!auditPath || !fs.existsSync(auditPath)) return 0;
+    const cutoff = now - auditRetentionDays * 24 * 60 * 60 * 1000;
+    const all = readAudit();
+    const keep = all.filter((e) => Date.parse(e.at) >= cutoff);
+    if (keep.length === all.length) return 0;
+    const tmp = `${auditPath}.tmp`;
+    fs.writeFileSync(tmp, keep.map((e) => JSON.stringify(e)).join('\n') + (keep.length ? '\n' : ''));
+    fs.renameSync(tmp, auditPath);
+    return all.length - keep.length;
+  }
+  pruneAudit();
 
   // Newest pupil-app build, from the GitHub release tags ("test-build-12").
   // Cached so 30 tablets checking at once cause one lookup, not 30.
@@ -108,7 +132,7 @@ export function createApp({
     return versionCache.value;
   }
 
-  const hub = new Hub(store, { audit, lessonMaxMs: lessonMaxMinutes * 60 * 1000 });
+  const hub = new Hub(store, { audit, lessonMaxMs: lessonMaxMinutes * 60 * 1000, deviceConfig });
   const sessions = new Map(); // token -> expiresAt
   const loginLimiter = makeFailureLimiter(10, 15 * 60 * 1000);
   const setupLimiter = makeFailureLimiter(30, 15 * 60 * 1000);
@@ -138,12 +162,23 @@ export function createApp({
 
   function send(res, status, body, headers = {}) {
     const isJson = typeof body !== 'string' && !Buffer.isBuffer(body);
+    let payload = Buffer.from(isJson ? JSON.stringify(body) : body);
+    const extra = {};
+    // Compress bigger replies (e.g. the dashboard's fallback refresh) to keep
+    // data use, and hosting costs, down.
+    const accepts = String((res.req && res.req.headers['accept-encoding']) || '');
+    if (payload.length > 1024 && /\bgzip\b/.test(accepts)) {
+      payload = zlib.gzipSync(payload);
+      extra['Content-Encoding'] = 'gzip';
+      extra.Vary = 'Accept-Encoding';
+    }
     res.writeHead(status, {
       'Content-Type': isJson ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store',
+      ...extra,
       ...headers,
     });
-    res.end(isJson ? JSON.stringify(body) : body);
+    res.end(payload);
   }
 
   async function readJson(req) {
@@ -229,6 +264,14 @@ export function createApp({
       const m = hub.sendMessage(lessonId, await readJson(req));
       return send(res, 201, { id: m.id });
     }],
+    ['POST', /^\/api\/lessons\/([a-f0-9]+)\/help\/clear$/, true, async (req, res, [lessonId]) => {
+      hub.clearHelp(lessonId, (await readJson(req)).tabletIds);
+      return send(res, 200, { ok: true });
+    }],
+    ['GET', /^\/api\/audit$/, true, async (req, res) => {
+      const entries = readAudit().slice(-500).reverse();
+      return send(res, 200, { retentionDays: auditRetentionDays, entries });
+    }],
     ['POST', /^\/api\/lessons\/([a-f0-9]+)\/freeze$/, true, async (req, res, [lessonId]) => {
       return send(res, 200, hub.freeze(lessonId, await readJson(req)));
     }],
@@ -246,7 +289,10 @@ export function createApp({
     }],
 
     // ---- Tablets (teacher / IT) ----
-    ['GET', /^\/api\/tablets$/, true, async (req, res) => send(res, 200, { tablets: hub.tabletsOverview() })],
+    ['GET', /^\/api\/tablets$/, true, async (req, res) => {
+      const latest = await latestAppVersion();
+      return send(res, 200, { latestVersionCode: latest.versionCode, tablets: hub.tabletsOverview(latest.versionCode) });
+    }],
     ['POST', /^\/api\/tablets\/setup-code$/, true, async (req, res) => {
       const entry = store.createSetupCode();
       audit('tablet.setupCode');
@@ -310,8 +356,10 @@ export function createApp({
 
   // ---- WebSockets --------------------------------------------------------
 
-  const teacherWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
-  const deviceWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024 });
+  // perMessageDeflate compresses live updates, which cuts data use a lot.
+  const compression = { threshold: 512 };
+  const teacherWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024, perMessageDeflate: compression });
+  const deviceWss = new WebSocketServer({ noServer: true, maxPayload: 16 * 1024, perMessageDeflate: compression });
 
   function keepAlive(ws) {
     ws.isAlive = true;
@@ -344,6 +392,8 @@ export function createApp({
     }
   });
 
+  let lastPrune = Date.now();
+
   // Keep-alive: ping every connection; drop ones that stop answering.
   const pingTimer = setInterval(() => {
     for (const wss of [teacherWss, deviceWss]) {
@@ -358,10 +408,25 @@ export function createApp({
     }
     hub.sweepStaleDevices();
     hub.endExpiredLessons();
+    if (Date.now() - lastPrune > 24 * 60 * 60 * 1000) {
+      lastPrune = Date.now();
+      pruneAudit();
+    }
   }, 15_000);
   server.on('close', () => clearInterval(pingTimer));
 
-  return { server, store, hub };
+  return { server, store, hub, pruneAudit };
+}
+
+// Settings for the tablets, from config/device-config.json.
+function loadDeviceConfig() {
+  try {
+    const raw = JSON.parse(fs.readFileSync(path.join(here, '..', 'config', 'device-config.json'), 'utf8'));
+    const list = (v) => (Array.isArray(v) ? v.filter((x) => typeof x === 'string' && x.length < 200).slice(0, 30) : []);
+    return { urlBarIds: list(raw.urlBarIds), urlHints: list(raw.urlHints) };
+  } catch {
+    return {};
+  }
 }
 
 // Run directly: `node src/server.js`
@@ -378,6 +443,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     cookieSecure: process.env.COOKIE_SECURE === 'true',
     lessonMaxMinutes: Number(process.env.LESSON_MAX_MINUTES) || 120,
     trustProxy: process.env.TRUST_PROXY === 'true',
+    auditRetentionDays: Number(process.env.AUDIT_RETENTION_DAYS) || 120,
+    deviceConfig: loadDeviceConfig(),
     appDownloadUrl: process.env.APP_DOWNLOAD_URL || undefined,
     releasesApi: process.env.APP_RELEASES_API || undefined,
   });

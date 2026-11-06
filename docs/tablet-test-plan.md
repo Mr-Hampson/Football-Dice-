@@ -69,6 +69,14 @@ to `KNOWN_URL_BAR_IDS` in `WebsiteCheckService.kt`.
 - [ ] Freeze, then turn Wi-Fi off. Does it thaw after about a minute?
 - [ ] Outside a lesson, after a newer build exists: does the app offer **Install update**, and does it install and keep both permissions?
 
+## 5c. Help, attention, board, health (v0.6)
+
+- [ ] In a lesson, tap **✋ I need help** in the app. Does the card show ✋ and move to the top with "Needs attention first" ticked? Does **Done** clear it on the tablet too?
+- [ ] Pull down the notification shade while in Silk. Is the **I need help** button there, and does it work?
+- [ ] Stay on an off-task site for 2+ minutes. Is the card highlighted, showing the minutes?
+- [ ] Press **Show on the board**. Is the code readable from the back of the room?
+- [ ] On the **Tablets** page, switch a tablet's website check off. Does it show a ⚠ within about a minute?
+
 ## 6. School Wi-Fi
 
 - [ ] Do all of the above on the **school's public Wi-Fi** (not a home network). Is there a sign-in page the tablets must accept first? Does anything get blocked?

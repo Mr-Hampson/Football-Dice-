@@ -88,6 +88,7 @@ class HubService : Service() {
     override fun onCreate() {
         super.onCreate()
         prefs = Prefs(this)
+        RemoteConfig.load(this)
         detector = ForegroundAppDetector(this)
         startForeground(NOTIFICATION_ID, buildStatusNotification())
         registerReceiver(screenReceiver, IntentFilter().apply {
@@ -121,6 +122,7 @@ class HubService : Service() {
             ACTION_JOIN -> sendJoin("join", intent.getStringExtra(EXTRA_CODE), intent.getStringExtra(EXTRA_NAME))
             ACTION_RENAME -> sendJoin("rename", null, intent.getStringExtra(EXTRA_NAME))
             ACTION_MESSAGE_SEEN -> intent.getStringExtra(EXTRA_MESSAGE_ID)?.let { messageAck(it, "seen") }
+            ACTION_HELP -> requestHelp(intent.getBooleanExtra(EXTRA_ON, true))
         }
         if (socket == null) connect()
         return START_STICKY
@@ -237,6 +239,7 @@ class HubService : Service() {
                     title = msg.optString("title"),
                     name = msg.optString("name"),
                     nameRequested = msg.optBoolean("nameRequested"),
+                    helpRequested = msg.optBoolean("helpRequested"),
                     allowedDomains = msg.optJSONArray("allowedDomains").toStringList(),
                     allowedApps = msg.optJSONArray("allowedApps").toStringList(),
                 )
@@ -250,6 +253,7 @@ class HubService : Service() {
                 sendStatus(force = true)
             }
             "joinError" -> joinError = msg.optString("error")
+            "config" -> RemoteConfig.update(this, msg)
             "link" -> {
                 val id = msg.optString("id")
                 val url = msg.optString("url")
@@ -280,6 +284,14 @@ class HubService : Service() {
 
     private fun linkAck(id: String, stage: String) {
         send(JSONObject().put("type", "linkAck").put("id", id).put("stage", stage))
+    }
+
+    /** "I need help" (or cancel it), from the app or the notification. */
+    private fun requestHelp(on: Boolean) {
+        if (lesson?.active != true) return
+        if (!send(JSONObject().put("type", "help").put("on", on))) {
+            joinError = "Not connected to the hub. Put your hand up instead."
+        }
     }
 
     private fun messageAck(id: String, stage: String) {
@@ -376,6 +388,7 @@ class HubService : Service() {
             .put("perms", JSONObject().put("usage", usage).put("website", website))
             .put("battery", batteryPercent())
             .put("appVersion", BuildConfig.VERSION_NAME)
+            .put("appVersionCode", BuildConfig.VERSION_CODE)
 
         val current = lesson
         if (current == null || !current.active) {
@@ -436,14 +449,26 @@ class HubService : Service() {
         val open = PendingIntent.getActivity(
             this, 0, Intent(this, MainActivity::class.java), pendingIntentFlags()
         )
-        return notificationBuilder(App.CHANNEL_STATUS, Notification.PRIORITY_LOW)
+        val builder = notificationBuilder(App.CHANNEL_STATUS, Notification.PRIORITY_LOW)
             .setSmallIcon(R.drawable.ic_notify)
             .setContentTitle(if (current?.active == true) "Classroom Hub – in a lesson" else tablet)
             .setContentText(text)
             .setStyle(Notification.BigTextStyle().bigText(text))
             .setContentIntent(open)
             .setOngoing(true)
-            .build()
+        // "I need help" straight from the notification, without leaving Silk.
+        if (connected && current?.active == true) {
+            val on = !current.helpRequested
+            val help = Intent(this, HubService::class.java).setAction(ACTION_HELP).putExtra(EXTRA_ON, on)
+            val pi = if (Build.VERSION.SDK_INT >= 26) {
+                PendingIntent.getForegroundService(this, 4, help, pendingIntentFlags())
+            } else {
+                PendingIntent.getService(this, 4, help, pendingIntentFlags())
+            }
+            @Suppress("DEPRECATION")
+            builder.addAction(Notification.Action.Builder(R.drawable.ic_notify, if (on) "✋ I need help" else "Cancel help request", pi).build())
+        }
+        return builder.build()
     }
 
     @Suppress("DEPRECATION") // priority and the no-channel builder are for pre-Android 8 tablets
@@ -532,6 +557,8 @@ class HubService : Service() {
         const val ACTION_LINK_OPENED = "uk.school.classroomhub.LINK_OPENED"
         const val ACTION_RECONNECT = "uk.school.classroomhub.RECONNECT"
         const val EXTRA_LINK_ID = "linkId"
+        const val ACTION_HELP = "uk.school.classroomhub.HELP"
+        const val EXTRA_ON = "on"
         const val ACTION_MESSAGE_SEEN = "uk.school.classroomhub.MESSAGE_SEEN"
         const val EXTRA_MESSAGE_ID = "messageId"
         private const val UPDATE_ID = 3
@@ -564,6 +591,10 @@ class HubService : Service() {
         /** Called when the website check starts: re-show a freeze in progress. */
         fun onWebsiteCheckReady() {
             running?.reapplyOverlays()
+        }
+
+        fun help(context: Context, on: Boolean) {
+            start(context, Intent(context, HubService::class.java).setAction(ACTION_HELP).putExtra(EXTRA_ON, on))
         }
 
         fun messageSeen(context: Context, messageId: String) {

@@ -66,6 +66,8 @@ class MainActivity : Activity() {
     private var checklist: LinearLayout? = null
     private var detailsView: TextView? = null
     private var updateBox: LinearLayout? = null
+    private var helpButton: Button? = null
+    private var helpNote: TextView? = null
     private var lastUpdateKey = ""
     private var lastChecklistKey = ""
 
@@ -120,6 +122,7 @@ class MainActivity : Activity() {
             mode = next
             root.removeAllViews()
             connectionView = null; infoView = null; errorView = null; checklist = null; detailsView = null; updateBox = null
+            helpButton = null; helpNote = null
             lastChecklistKey = ""
             lastUpdateKey = ""
             when (next) {
@@ -258,6 +261,12 @@ class MainActivity : Activity() {
         root.addView(heading("Hi ${lesson.name}"))
         root.addView(subtle("Tablet ${prefs.tabletNumber ?: "?"} · ${lesson.title}"))
         connectionView = statusLine().also { root.addView(it) }
+        // "I need help": a hand-up signal to the teacher. No typing, no chat.
+        helpButton = Button(this).apply {
+            textSize = 22f
+            setOnClickListener { HubService.help(this@MainActivity, HubService.lesson?.helpRequested != true) }
+        }.also { root.addView(it) }
+        helpNote = subtle("").also { root.addView(it) }
         infoView = body("Your teacher can see which app you are using and the name of the website you are on " +
             "(for example bbc.co.uk). They cannot see the pages you read, your screen, or anything you type. " +
             "This stops when the lesson ends.").also { root.addView(it) }
@@ -286,6 +295,10 @@ class MainActivity : Activity() {
             it.setTextColor(if (HubService.connected) GREEN else GREY)
         }
         HubService.joinError?.let { errorView?.text = it }
+        val asked = HubService.lesson?.helpRequested == true
+        helpButton?.text = if (asked) "Cancel help request" else "✋ I need help"
+        helpNote?.text = if (asked) "Your teacher has been told. They'll come to you." else "Also in the Classroom Hub notification at the top of the screen."
+        if (mode == Mode.LESSON && HubService.joinError != null) helpNote?.text = HubService.joinError
 
         val usage = Permissions.hasUsageAccess(this)
         val website = Permissions.isWebsiteCheckOn(this)
