@@ -12,6 +12,8 @@
 //   TRUST_PROXY       set to "true" when running behind a hosting proxy (Render)
 //   APP_DOWNLOAD_URL  where /app sends tablets to download the pupil app
 //   AUDIT_RETENTION_DAYS  audit log entries older than this are deleted (default 120)
+//   AUDIT_KEY         if set, audit log entries are encrypted on disk with it
+//   TEACHER_ALLOWED_IPS  optional: dashboard only from these IPs/ranges, e.g. 203.0.113.7,198.51.100.0/24
 
 import http from 'node:http';
 import os from 'node:os';
@@ -75,6 +77,8 @@ export function createApp({
   password,
   dataDir = null,
   cookieSecure = false,
+  auditKey: auditKeyInput = null,
+  teacherAllowedIps = '',
   lessonMaxMinutes = 120,
   auditRetentionDays = 120,
   deviceConfig = {},
@@ -89,17 +93,39 @@ export function createApp({
   // The audit log records what teachers DO (start lessons, send links),
   // never what pupils do.
   const auditPath = dataDir ? path.join(dataDir, 'audit.log') : null;
+  // Audit entries are encrypted on disk (AES-256-GCM) when AUDIT_KEY is set,
+  // so a leaked disk or backup can't be read. Note: the key lives with the
+  // hub's other settings, so this does not protect against a compromised
+  // hosting account. Older unencrypted lines are still read.
+  const auditKey = auditKeyInput ? crypto.createHash('sha256').update(String(auditKeyInput)).digest() : null;
+  function encodeAudit(entry) {
+    const json = JSON.stringify(entry);
+    if (!auditKey) return json;
+    const iv = crypto.randomBytes(12);
+    const cipher = crypto.createCipheriv('aes-256-gcm', auditKey, iv);
+    const ct = Buffer.concat([cipher.update(json, 'utf8'), cipher.final()]);
+    return `enc1:${Buffer.concat([iv, cipher.getAuthTag(), ct]).toString('base64')}`;
+  }
+  function decodeAudit(line) {
+    if (!line.startsWith('enc1:')) return JSON.parse(line);
+    if (!auditKey) return null;
+    const buf = Buffer.from(line.slice(5), 'base64');
+    const decipher = crypto.createDecipheriv('aes-256-gcm', auditKey, buf.subarray(0, 12));
+    decipher.setAuthTag(buf.subarray(12, 28));
+    return JSON.parse(Buffer.concat([decipher.update(buf.subarray(28)), decipher.final()]).toString('utf8'));
+  }
+
   const audit = (action, details = {}) => {
     if (!auditPath) return;
     fs.mkdirSync(dataDir, { recursive: true });
-    fs.appendFileSync(auditPath, `${JSON.stringify({ at: new Date().toISOString(), action, ...details })}\n`);
+    fs.appendFileSync(auditPath, `${encodeAudit({ at: new Date().toISOString(), action, ...details })}\n`);
   };
 
   // Keep the audit log for a fixed period only, then delete old entries.
   function readAudit() {
     if (!auditPath || !fs.existsSync(auditPath)) return [];
     return fs.readFileSync(auditPath, 'utf8').split('\n').filter(Boolean).map((line) => {
-      try { return JSON.parse(line); } catch { return null; }
+      try { return decodeAudit(line); } catch { return null; }
     }).filter(Boolean);
   }
   function pruneAudit(now = Date.now()) {
@@ -109,7 +135,7 @@ export function createApp({
     const keep = all.filter((e) => Date.parse(e.at) >= cutoff);
     if (keep.length === all.length) return 0;
     const tmp = `${auditPath}.tmp`;
-    fs.writeFileSync(tmp, keep.map((e) => JSON.stringify(e)).join('\n') + (keep.length ? '\n' : ''));
+    fs.writeFileSync(tmp, keep.map((e) => encodeAudit(e)).join('\n') + (keep.length ? '\n' : ''));
     fs.renameSync(tmp, auditPath);
     return all.length - keep.length;
   }
@@ -152,12 +178,44 @@ export function createApp({
   // from the proxy, so use the address the proxy recorded instead. We take
   // the LAST X-Forwarded-For entry: the one the proxy itself added, which a
   // client cannot fake.
+  // Optional: the dashboard only works from these addresses (e.g. the school's
+  // public IP), so a leaked password is useless from outside school.
+  // Tablets are never restricted. Entries: exact IPs or IPv4 ranges (a.b.c.0/24).
+  const allowList = String(teacherAllowedIps || '').split(',').map((x) => x.trim()).filter(Boolean);
+  function ipv4ToInt(ip) {
+    const parts = ip.split('.').map(Number);
+    return parts.length === 4 && parts.every((n) => n >= 0 && n <= 255) ? parts.reduce((a, n) => (a << 8) + n, 0) >>> 0 : null;
+  }
+  function teacherIpAllowed(req) {
+    if (!allowList.length) return true;
+    const ip = clientIp(req).replace(/^::ffff:/, '');
+    return allowList.some((entry) => {
+      if (!entry.includes('/')) return entry === ip;
+      const [base, bits] = entry.split('/');
+      const a = ipv4ToInt(ip), b = ipv4ToInt(base), n = Number(bits);
+      if (a == null || b == null || !(n >= 0 && n <= 32)) return false;
+      const mask = n === 0 ? 0 : (~0 << (32 - n)) >>> 0;
+      return (a & mask) === (b & mask);
+    });
+  }
+
   function clientIp(req) {
     if (trustProxy) {
       const forwarded = String(req.headers['x-forwarded-for'] || '').split(',').map((s) => s.trim()).filter(Boolean);
       if (forwarded.length) return forwarded[forwarded.length - 1];
     }
     return req.socket.remoteAddress || 'unknown';
+  }
+
+  // Sent with every reply. HSTS tells browsers to only ever use HTTPS here.
+  function securityHeaders() {
+    return {
+      'X-Content-Type-Options': 'nosniff',
+      'Referrer-Policy': 'no-referrer',
+      'X-Frame-Options': 'DENY',
+      'Permissions-Policy': 'camera=(), microphone=(), geolocation=()',
+      ...(cookieSecure ? { 'Strict-Transport-Security': 'max-age=31536000' } : {}),
+    };
   }
 
   function send(res, status, body, headers = {}) {
@@ -175,6 +233,7 @@ export function createApp({
     res.writeHead(status, {
       'Content-Type': isJson ? 'application/json; charset=utf-8' : 'text/plain; charset=utf-8',
       'Cache-Control': 'no-store',
+      ...securityHeaders(),
       ...extra,
       ...headers,
     });
@@ -206,6 +265,7 @@ export function createApp({
     res.writeHead(200, {
       'Content-Type': STATIC_TYPES[path.extname(file)] || 'application/octet-stream',
       'Cache-Control': 'no-cache',
+      ...securityHeaders(),
       'Content-Security-Policy':
         "default-src 'self'; connect-src 'self' ws: wss:; img-src 'self' data:; style-src 'self'; script-src 'self'; frame-ancestors 'none'",
       'X-Content-Type-Options': 'nosniff',
@@ -333,6 +393,10 @@ export function createApp({
         for (const [method, re, needsTeacher, handler] of routes) {
           const match = pathname.match(re);
           if (!match || req.method !== method) continue;
+          const teacherRoute = needsTeacher || /^\/api\/(login|logout|me)$/.test(pathname);
+          if (teacherRoute && !teacherIpAllowed(req)) {
+            return send(res, 403, { error: 'The teacher dashboard only works on the school network.' });
+          }
           if (needsTeacher && !isTeacher(req)) return send(res, 401, { error: 'Please log in' });
           return await handler(req, res, match.slice(1));
         }
@@ -342,7 +406,7 @@ export function createApp({
       // Short, easy-to-type install link for tablets: /app forwards to the
       // newest build of the pupil app.
       if (pathname === '/app' || pathname === '/app/') {
-        res.writeHead(302, { Location: appDownloadUrl, 'Cache-Control': 'no-store' });
+        res.writeHead(302, { Location: appDownloadUrl, 'Cache-Control': 'no-store', ...securityHeaders() });
         return res.end();
       }
       if (req.method === 'GET') return serveStatic(req, res, pathname);
@@ -379,6 +443,7 @@ export function createApp({
       // teacher's cookie (cross-site WebSocket hijacking).
       const origin = req.headers.origin;
       if (origin && new URL(origin).host !== req.headers.host) return reject(403, 'Forbidden');
+      if (!teacherIpAllowed(req)) return reject(403, 'Forbidden');
       if (!isTeacher(req)) return reject(401, 'Unauthorized');
       teacherWss.handleUpgrade(req, socket, head, (ws) => hub.attachTeacher(keepAlive(ws)));
     } else if (pathname === '/ws/device') {
@@ -441,6 +506,8 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     password,
     dataDir: process.env.DATA_DIR || path.join(here, '..', 'data'),
     cookieSecure: process.env.COOKIE_SECURE === 'true',
+    auditKey: process.env.AUDIT_KEY || null,
+    teacherAllowedIps: process.env.TEACHER_ALLOWED_IPS || '',
     lessonMaxMinutes: Number(process.env.LESSON_MAX_MINUTES) || 120,
     trustProxy: process.env.TRUST_PROXY === 'true',
     auditRetentionDays: Number(process.env.AUDIT_RETENTION_DAYS) || 120,

@@ -26,6 +26,12 @@ services:
         value: "true"
       - key: TRUST_PROXY
         value: "true"
+      # Encrypts the audit log on disk. Generated for you; don't change it,
+      # or older entries can't be read.
+      - key: AUDIT_KEY
+        generateValue: true
+      # Optional: set TEACHER_ALLOWED_IPS by hand in Render's Environment tab
+      # (e.g. the school's public IP) to allow the dashboard from school only.
       - key: DATA_DIR
         value: /var/data
     # Keeps the list of set-up tablets across restarts (no pupil data).

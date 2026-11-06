@@ -152,8 +152,9 @@ class MainActivity : Activity() {
         val button = Button(this).apply { text = "Set up" }
         button.setOnClickListener {
             val url = server.text.toString().trim().trimEnd('/')
-            if (!url.startsWith("https://") && !url.startsWith("http://")) {
-                error.text = "The hub address should start with https://"
+            // Encrypted connections only: an http:// hub is refused.
+            if (!url.startsWith("https://") || url.length < 12) {
+                error.text = "The hub address must start with https://"
                 return@setOnClickListener
             }
             button.isEnabled = false

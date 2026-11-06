@@ -51,6 +51,21 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - **Settings sent from the hub** (`server/config/device-config.json`): where Silk's address bar is. A Silk change is fixed with a hub deploy instead of an app update.
 - **Lower data use:** live updates and larger replies are now compressed, to stay inside Render's free 5 GB a month.
 
+### v0.7 – security tightened; hosting questions (agreed)
+- **Correction:** HTTPS protects data **in transit only**, not where it's stored. The deck no longer presents it as sufficient (the "online banking" comparison was removed). The main protection is **data minimisation**: no pupil names or activity are ever written to disk.
+- **Audit log encrypted at rest** (AES-256-GCM) when `AUDIT_KEY` is set. Limit: the key is held with the hub's settings, so it protects against a leaked disk or backup, not a compromised hosting account.
+- **Optional dashboard IP allow-list** (`TEACHER_ALLOWED_IPS`), e.g. the school's public IP, so the shared password is useless outside school. Tablets are never restricted.
+- **Security headers** on every reply (HSTS, no framing, no sniffing, permissions policy).
+- **The app only accepts https:// hub addresses**; unencrypted connections are refused.
+- **Dependency checks:** `npm audit` in the build, and weekly Dependabot update checks for the hub, the app and the build.
+- **Known gaps:** one shared teacher password (individual logins deferred); live lessons are held in server memory; the host's disk encryption and staff access are unconfirmed; the tablet's key is stored in app-private storage, not the Android Keystore.
+
+### Hosting: stay on Render for now; questions for the council and DPO
+- Render publishes **ISO 27001:2022** and **SOC 2 Type II**, a GDPR DPA covering **UK GDPR / DPA 2018** with UK transfer terms, and certification under the **EU-US Data Privacy Framework with the UK Extension** [From Render's own documents: confirm on dataprivacyframework.gov]. The full SOC 2 report and ISO certificate need a higher Render plan and an NDA.
+- No Scottish rule requiring UK hosting was found. **Council policy may be stricter.**
+- **Questions:** (1) Is EU hosting acceptable, or UK only? (2) Are US-owned providers acceptable with a DPA and the UK-US data bridge? (3) Is there an existing cloud agreement (e.g. Azure UK South)? (4) What supplier evidence is needed (ISO 27001, SOC 2, Cyber Essentials)? (5) Does Render encrypt disks at rest, and who on its staff can access servers?
+- If UK-only is required: move the hub (it runs on any host via the Dockerfile; about a day of work) and re-set up each tablet with the new address (about a minute each, and permissions are kept).
+
 ### Before roll-out (deferred by the school until closer to the trial)
 - Update the **walkthrough videos** and **teacher guide** to cover messages and freezing.
 - Update the **pupil poster's** "what your teacher can see" box: the teacher can also send messages and freeze screens for up to 5 minutes. This is needed for transparency before pupils use those features.

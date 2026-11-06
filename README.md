@@ -132,6 +132,11 @@ The repository includes `render.yaml`, which sets everything up on
    the top of the service page, e.g. `https://classroom-hub-xxxx.onrender.com`.
 4. The teacher password is in the service's **Environment** tab
    (`TEACHER_PASSWORD`). You can change it there.
+5. Security settings, also in the **Environment** tab:
+   - `AUDIT_KEY`: encrypts the audit log on disk. Created for new setups; for an
+     existing service, add it with a long random value and never change it.
+   - `TEACHER_ALLOWED_IPS` (optional): the school's public IP address(es), so
+     the dashboard only works in school. Tablets are not affected.
 
 What it sets up: the Starter plan plus a 1 GB disk, in Frankfurt (EU). Render
 has no UK region; confirm the location with the DPO. The disk holds only the

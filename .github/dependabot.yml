@@ -1,0 +1,16 @@
+# Weekly checks for security updates to the libraries the hub, the app and
+# the build use. GitHub opens a pull request when an update is available.
+version: 2
+updates:
+  - package-ecosystem: npm
+    directory: /server
+    schedule:
+      interval: weekly
+  - package-ecosystem: gradle
+    directory: /android
+    schedule:
+      interval: weekly
+  - package-ecosystem: github-actions
+    directory: /
+    schedule:
+      interval: weekly

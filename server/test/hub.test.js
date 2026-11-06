@@ -325,3 +325,44 @@ test('audit log entries are deleted after the retention period', async () => {
   assert.deepEqual(lines, ['new']);
   server.close();
 });
+
+test('audit log is encrypted on disk when AUDIT_KEY is set', async (t) => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-enc-'));
+  const { server, hub } = createApp({ password: 'x', dataDir: dir, auditKey: 'test-key', log: () => {} });
+  await new Promise((r) => server.listen(0, r));
+  t.after(() => server.close());
+  const lesson = hub.startLesson({ title: 'Secret lesson title' });
+  const raw = fs.readFileSync(path.join(dir, 'audit.log'), 'utf8');
+  assert.ok(raw.startsWith('enc1:'));
+  assert.ok(!raw.includes('Secret lesson title'));
+  // Still readable through the dashboard.
+  const base = `http://localhost:${server.address().port}`;
+  const login = await fetch(`${base}/api/login`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ password: 'x' }) });
+  const cookie = login.headers.get('set-cookie').split(';')[0];
+  const { entries } = await (await fetch(`${base}/api/audit`, { headers: { Cookie: cookie } })).json();
+  assert.ok(entries.some((e) => e.title === 'Secret lesson title' && e.lessonId === lesson.id));
+});
+
+test('dashboard can be limited to the school network; tablets are not', async (t) => {
+  const { server, store } = createApp({ password: 'x', trustProxy: true, teacherAllowedIps: '203.0.113.7,198.51.100.0/24', cookieSecure: true, log: () => {} });
+  await new Promise((r) => server.listen(0, r));
+  t.after(() => server.close());
+  const base = `http://localhost:${server.address().port}`;
+  const login = (ip) => fetch(`${base}/api/login`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': ip }, body: JSON.stringify({ password: 'x' }),
+  });
+  assert.equal((await login('8.8.8.8')).status, 403);
+  assert.equal((await login('203.0.113.7')).status, 200);
+  const inRange = await login('198.51.100.42');
+  assert.equal(inRange.status, 200);
+  assert.match(inRange.headers.get('strict-transport-security'), /max-age/);
+  // Tablets set up from anywhere (e.g. the public Wi-Fi).
+  const { code } = store.createSetupCode();
+  const enrol = await fetch(`${base}/api/device/enrol`, {
+    method: 'POST', headers: { 'Content-Type': 'application/json', 'X-Forwarded-For': '8.8.8.8' }, body: JSON.stringify({ code, number: '1' }),
+  });
+  assert.equal(enrol.status, 200);
+});
