@@ -1,7 +1,10 @@
 name: Build and test
 
 on:
+  # Builds and tests run for every proposed change (pull requests), but only
+  # pushes to the main development branches build releases.
   push:
+    branches: [claude/fire-tablets-classroom-system-trytro, main]
   pull_request:
   workflow_dispatch:
 
@@ -29,6 +32,8 @@ jobs:
   android:
     name: Pupil app (APK)
     runs-on: ubuntu-latest
+    outputs:
+      signed: ${{ steps.signing.outputs.signed }}
     defaults:
       run:
         working-directory: android
@@ -43,14 +48,17 @@ jobs:
       # Optional: if these repository secrets exist, every build is signed
       # with the same key so new versions install over old ones.
       - name: Load signing key
+        id: signing
         env:
           KEYSTORE_BASE64: ${{ secrets.HUB_KEYSTORE_BASE64 }}
         run: |
           if [ -n "$KEYSTORE_BASE64" ]; then
             echo "$KEYSTORE_BASE64" | base64 -d > "$RUNNER_TEMP/hub.jks"
             echo "HUB_KEYSTORE_PATH=$RUNNER_TEMP/hub.jks" >> "$GITHUB_ENV"
+            echo "signed=true" >> "$GITHUB_OUTPUT"
           else
-            echo "No signing secret set - using a throwaway debug key."
+            echo "No signing secret available - using a throwaway debug key. This build will not be released."
+            echo "signed=false" >> "$GITHUB_OUTPUT"
           fi
 
       - name: Unit tests
@@ -85,7 +93,13 @@ jobs:
   release:
     name: Publish test release
     needs: [server, android]
-    if: github.event_name == 'push' || github.event_name == 'workflow_dispatch'
+    # Only release from our own branch, never from automated update branches
+    # (e.g. Dependabot), and only builds signed with the school key: tablets
+    # can only install updates signed with the same key.
+    if: >-
+      (github.event_name == 'push' || github.event_name == 'workflow_dispatch') &&
+      github.ref == 'refs/heads/claude/fire-tablets-classroom-system-trytro' &&
+      needs.android.outputs.signed == 'true'
     runs-on: ubuntu-latest
     permissions:
       contents: write
