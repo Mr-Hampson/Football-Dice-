@@ -37,7 +37,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - **Freeze screens** [Agreed]: a full-screen “Eyes on your teacher” cover. Ends on its own after **5 minutes** (1–10 allowed), when the teacher unfreezes, when the lesson ends, or if the tablet loses the hub for a minute.
 - **Links open automatically** [Agreed], with a notification as the fallback.
 - **In-app updates** [Agreed]: the tablet offers “Install update” outside lessons. Android 11 still needs one confirm tap per tablet.
-- How: the pop-ups and the freeze use the website-check accessibility service's overlay window. **[Unverified on Fire OS: test on the spare tablet first.]** It isn't a true device lock: a forced restart or holding the power button still works.
+- How: the pop-ups and the freeze use the website-check accessibility service's overlay window. **Freeze tested on the school's tablets and worked** (Test build 13, hub deployed) [Confirmed by the school]. It isn't a true device lock: a forced restart or holding the power button still works.
 - **Changed decision:** device locking was "outside the MVP" in v0.3. It's now in, as a trial feature, at the school's request.
 - **For the DPO:** the audit log records the **text** of staff-to-pupil messages, for safeguarding accountability; confirm or change. Freezing is a new kind of control over pupil devices, so add it to the DPIA and to the pupils' "what your teacher can see" information.
 
