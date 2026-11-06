@@ -54,7 +54,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 ### v0.7 – security tightened; hosting questions (agreed)
 - **Correction:** HTTPS protects data **in transit only**, not where it's stored. The deck no longer presents it as sufficient (the "online banking" comparison was removed). The main protection is **data minimisation**: no pupil names or activity are ever written to disk.
 - **Audit log encrypted at rest** (AES-256-GCM) when `AUDIT_KEY` is set. Limit: the key is held with the hub's settings, so it protects against a leaked disk or backup, not a compromised hosting account.
-- **Optional dashboard IP allow-list** (`TEACHER_ALLOWED_IPS`), e.g. the school's public IP, so the shared password is useless outside school. Tablets are never restricted.
+- **Optional dashboard IP allow-list** (`TEACHER_ALLOWED_IPS`), e.g. the school's public IP, so the shared password is useless outside school. Tablets are never restricted. **Not enabled for now** [Decided]: staff need access from home, e.g. testing at weekends.
 - **Security headers** on every reply (HSTS, no framing, no sniffing, permissions policy).
 - **The app only accepts https:// hub addresses**; unencrypted connections are refused.
 - **Dependency checks:** `npm audit` in the build, and weekly Dependabot update checks for the hub, the app and the build.
