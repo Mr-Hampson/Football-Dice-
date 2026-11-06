@@ -60,6 +60,8 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - **Dependency checks:** `npm audit` in the build, and weekly Dependabot update checks for the hub, the app and the build.
 - **Known gaps:** one shared teacher password (individual logins deferred); live lessons are held in server memory; the host's disk encryption and staff access are unconfirmed; the tablet's key is stored in app-private storage, not the Android Keystore.
 
+- **Incident (6 Nov):** Dependabot's update branches briefly published unsigned "Test builds" 19, 20, 23 and 27 as the latest release. Tablets can't install them, because the signature doesn't match. Fixed: releases now come only from our branch, and only when signed with the school key (Test build 33 is the latest). The four stray releases should be deleted on GitHub. Dependabot's pull requests are proposals only: review them before merging.
+
 ### Hosting: stay on Render for now; questions for the council and DPO
 - Render publishes **ISO 27001:2022** and **SOC 2 Type II**, a GDPR DPA covering **UK GDPR / DPA 2018** with UK transfer terms, and certification under the **EU-US Data Privacy Framework with the UK Extension** [From Render's own documents: confirm on dataprivacyframework.gov]. The full SOC 2 report and ISO certificate need a higher Render plan and an NDA.
 - No Scottish rule requiring UK hosting was found. **Council policy may be stricter.**
