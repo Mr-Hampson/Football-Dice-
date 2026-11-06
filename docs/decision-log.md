@@ -41,6 +41,11 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - **Changed decision:** device locking was "outside the MVP" in v0.3. It's now in, as a trial feature, at the school's request.
 - **For the DPO:** the audit log records the **text** of staff-to-pupil messages, for safeguarding accountability; confirm or change. Freezing is a new kind of control over pupil devices, so add it to the DPIA and to the pupils' "what your teacher can see" information.
 
+### Before roll-out (deferred by the school until closer to the trial)
+- Update the **walkthrough videos** and **teacher guide** to cover messages and freezing.
+- Update the **pupil poster's** "what your teacher can see" box: the teacher can also send messages and freeze screens for up to 5 minutes. This is needed for transparency before pupils use those features.
+- Fill in the trial details on the head teacher deck (names, trial length, staff and tablet numbers).
+
 ### First real-tablet test (6 Nov 2026) — passed
 - On the spare Fire HD 10 (13th Gen) with the hosted hub: setup, joining with code + name, **foreground app tracking**, **Silk website detection (on/off task)**, links, and reconnecting all worked [Confirmed by the school]. The biggest technical unknown, reading Silk's address bar, works on this model.
 - The teacher dashboard went blank on the school network because its live connection was blocked; it now falls back to refreshing every few seconds. Tablets connected without problems.
