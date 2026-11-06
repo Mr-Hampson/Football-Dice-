@@ -38,7 +38,7 @@ jobs:
         with:
           distribution: temurin
           java-version: 17
-      - uses: gradle/actions/setup-gradle@v4
+      - uses: gradle/actions/setup-gradle@v6
 
       # Optional: if these repository secrets exist, every build is signed
       # with the same key so new versions install over old ones.
