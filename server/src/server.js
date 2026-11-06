@@ -10,6 +10,7 @@
 //   COOKIE_SECURE     set to "true" when served over HTTPS (it should be!)
 //   LESSON_MAX_MINUTES lessons end automatically after this long (default 120)
 //   TRUST_PROXY       set to "true" when running behind a hosting proxy (Render)
+//   APP_DOWNLOAD_URL  where /app sends tablets to download the pupil app
 
 import http from 'node:http';
 import os from 'node:os';
@@ -74,6 +75,7 @@ export function createApp({
   cookieSecure = false,
   lessonMaxMinutes = 120,
   trustProxy = false,
+  appDownloadUrl = 'https://github.com/Mr-Hampson/Football-Dice-/releases/latest/download/classroom-hub.apk',
   log = console.log,
 } = {}) {
   if (!password) throw new Error('A teacher password is required');
@@ -259,6 +261,12 @@ export function createApp({
         return send(res, 404, { error: 'Not found' });
       }
       if (pathname === '/healthz') return send(res, 200, 'ok');
+      // Short, easy-to-type install link for tablets: /app forwards to the
+      // newest build of the pupil app.
+      if (pathname === '/app' || pathname === '/app/') {
+        res.writeHead(302, { Location: appDownloadUrl, 'Cache-Control': 'no-store' });
+        return res.end();
+      }
       if (req.method === 'GET') return serveStatic(req, res, pathname);
       return send(res, 405, 'Method not allowed');
     } catch (err) {
@@ -338,6 +346,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     cookieSecure: process.env.COOKIE_SECURE === 'true',
     lessonMaxMinutes: Number(process.env.LESSON_MAX_MINUTES) || 120,
     trustProxy: process.env.TRUST_PROXY === 'true',
+    appDownloadUrl: process.env.APP_DOWNLOAD_URL || undefined,
   });
   server.listen(port, () => {
     console.log(`\nClassroom Hub is running.`);

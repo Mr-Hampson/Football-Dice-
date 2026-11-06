@@ -199,3 +199,12 @@ test('behind a proxy, wrong passwords only lock out the person typing them', asy
   assert.equal(await login('right', '10.0.0.1'), 429); // this person is locked out
   assert.equal(await login('right', '10.0.0.2'), 200); // other teachers are not
 });
+
+test('/app forwards tablets to the newest app download', async (t) => {
+  const { server } = createApp({ password: 'x', log: () => {} });
+  await new Promise((r) => server.listen(0, r));
+  t.after(() => server.close());
+  const res = await fetch(`http://localhost:${server.address().port}/app`, { redirect: 'manual' });
+  assert.equal(res.status, 302);
+  assert.match(res.headers.get('location'), /releases\/latest\/download\/classroom-hub\.apk$/);
+});

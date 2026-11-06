@@ -32,6 +32,10 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - Each build is published as a **public GitHub Release**, so tablets can install it from Silk without a GitHub account [Agreed, trial only]. A move to a locked-down, private distribution is required if the project goes commercial.
 - Builds are signed with a **permanent school key** held in GitHub secrets (from Test build 6), so updates install over older versions. The key holder must keep a backup [Confirmed].
 
+### First real-tablet test (6 Nov 2026) — passed
+- On the spare Fire HD 10 (13th Gen) with the hosted hub: setup, joining with code + name, **foreground app tracking**, **Silk website detection (on/off task)**, links, and reconnecting all worked [Confirmed by the school]. The biggest technical unknown, reading Silk's address bar, works on this model.
+- The teacher dashboard went blank on the school network because its live connection was blocked; it now falls back to refreshing every few seconds. Tablets connected without problems.
+
 ### Changed requirements (agreed)
 - **Tablets are shared, not individual** [Confirmed]. They are **numbered**, and pupils don't use the same one each time. *Supersedes the v0.3 "individual tablets" requirement.*
 - **Several lessons can run at the same time** in different rooms [Confirmed].
