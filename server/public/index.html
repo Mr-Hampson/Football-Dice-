@@ -61,7 +61,12 @@
           <h2 id="lessonTitleShown"></h2>
           <div class="summary" id="summary" aria-live="polite"></div>
           <p class="hint" id="lessonTimes"></p>
-          <button type="button" id="endLessonBtn" class="danger">End lesson</button>
+          <div class="row-btns">
+            <button type="button" id="freezeAllBtn" class="freeze">❄ Freeze all screens</button>
+            <button type="button" id="unfreezeAllBtn" hidden>Unfreeze all</button>
+            <button type="button" id="endLessonBtn" class="danger">End lesson</button>
+          </div>
+          <p class="hint" id="freezeHint">Freezing covers pupils' screens with “Eyes on your teacher” for 5 minutes, or until you unfreeze.</p>
         </div>
       </div>
 
@@ -84,8 +89,22 @@
         </div>
       </div>
 
+      <div class="panel send-bar">
+        <div class="msg-head"><span class="label">Message pupils</span><span class="hint">Pops up on their screen until they press OK.</span></div>
+        <div class="chips" id="quickMessages"></div>
+        <form id="messageForm" class="inline-form">
+          <label class="visually-hidden" for="messageInput">Message to send</label>
+          <input id="messageInput" placeholder="Or type your own message" maxlength="200" autocomplete="off">
+          <button type="submit" class="primary" id="msgAllBtn">Send to everyone</button>
+          <button type="button" id="msgSelectedBtn" disabled>Send to selected (0)</button>
+        </form>
+        <p class="error" id="messageError" role="alert"></p>
+      </div>
+
       <div class="panel action-bar" id="actionBar" hidden>
         <span id="selectedCount"></span>
+        <button type="button" id="freezeSelBtn" class="freeze">❄ Freeze</button>
+        <button type="button" id="unfreezeSelBtn">Unfreeze</button>
         <button type="button" id="renameBtn">Ask to retype name</button>
         <button type="button" id="removeBtn" class="danger">Remove from lesson</button>
         <button type="button" id="clearSelBtn" class="quiet">Clear selection</button>

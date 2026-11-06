@@ -145,3 +145,12 @@ h3 { font-size: 1rem; margin: 14px 0 6px; }
 @media (max-width: 700px) { .lesson-head { grid-template-columns: 1fr; } }
 
 .conn-msg { background: var(--idle-bg); color: var(--idle); border-color: transparent; }
+
+/* Messages and freezing */
+.row-btns { display: flex; flex-wrap: wrap; gap: 8px; }
+button.freeze { color: #1b5fa8; border-color: #b9d3f0; }
+.msg-head { display: flex; flex-wrap: wrap; gap: 4px 10px; align-items: baseline; }
+.quick { background: var(--idle-bg); color: var(--idle); border: 1px solid transparent; border-radius: 999px; padding: 5px 12px; font-size: 0.9rem; }
+.quick:hover { border-color: var(--idle); }
+.card .badge.frozen { color: #1b5fa8; }
+.card.is-frozen { box-shadow: inset 0 0 0 2px #b9d3f0; }

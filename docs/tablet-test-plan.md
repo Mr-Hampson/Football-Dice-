@@ -59,6 +59,16 @@ to `KNOWN_URL_BAR_IDS` in `WebsiteCheckService.kt`.
 - [ ] Tap it. Does Silk open the page, and does the card show ✓✓ opened?
 - [ ] Send a link while the tablet is asleep or offline, then wake it. Does the notification arrive?
 
+## 5b. Messages, freezing and updates (v0.5)
+
+- [ ] Send **Back on task, please** to the tablet. Does a card pop up over Silk? Does OK close it, and the dashboard show ✓✓ seen?
+- [ ] Send a link. Does Silk open **by itself**, with the card showing ✓✓ opened?
+- [ ] **Freeze** the tablet. Is the whole screen covered, including the top bar? Try the Home and Back buttons and pulling down from the top: does anything get past it?
+- [ ] While frozen, send a message. Does it show on top?
+- [ ] **Unfreeze**. Does the cover go at once? Freeze again and wait 5 minutes: does it thaw on its own?
+- [ ] Freeze, then turn Wi-Fi off. Does it thaw after about a minute?
+- [ ] Outside a lesson, after a newer build exists: does the app offer **Install update**, and does it install and keep both permissions?
+
 ## 6. School Wi-Fi
 
 - [ ] Do all of the above on the **school's public Wi-Fi** (not a home network). Is there a sign-in page the tablets must accept first? Does anything get blocked?

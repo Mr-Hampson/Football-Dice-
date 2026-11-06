@@ -37,6 +37,9 @@ make outgoing connections over the normal secure web port (443).
 | Which app is in use | Android's *Usage access* permission (`UsageStatsManager`) |
 | Which website (Silk) | **Experimental.** An accessibility service reads Silk's address bar. Only the domain is kept (e.g. `bbc.co.uk`) |
 | Send a link to everyone or to selected pupils | Tap pupil cards to select them. The tablet shows a notification; tapping it opens Silk |
+| Message pupils | One-tap or typed messages pop up over any app until the pupil presses OK (✓ received, ✓✓ seen) |
+| Freeze screens | Covers tablets with "Eyes on your teacher" for up to 5 minutes; unfreeze any time |
+| App updates | The app offers "Install update" outside lessons; one confirm tap per tablet |
 | Received / opened ticks | The tablet confirms when the notification arrives and when it's tapped |
 
 ### Privacy by design

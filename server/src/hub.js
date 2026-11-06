@@ -19,6 +19,11 @@ const JOIN_FAILURE_WINDOW_MS = 10 * 60 * 1000;
 
 const DEVICE_STATES = new Set(['on', 'off', 'idle', 'unknown', 'paused']);
 const LINK_STAGES = ['sent', 'delivered', 'opened'];
+const MESSAGE_STAGES = ['sent', 'delivered', 'seen'];
+const MAX_MESSAGE_LENGTH = 200;
+// Frozen screens always thaw on their own. Teachers can choose 1-10 minutes.
+export const FREEZE_DEFAULT_MINUTES = 5;
+const FREEZE_MAX_MINUTES = 10;
 
 function cleanString(value, max) {
   return typeof value === 'string' ? value.slice(0, max) : null;
@@ -56,6 +61,8 @@ export class Hub {
       allowedDomains: normaliseDomainList(allowedDomains),
       allowedApps: normalisePackageList(allowedApps),
       links: [],
+      messages: [],
+      frozen: new Map(), // tabletId -> { until, text }
       participants: new Map(), // tabletId -> { name, joinedAt, nameRequested }
     };
     this.lessons.set(lesson.id, lesson);
@@ -94,9 +101,21 @@ export class Hub {
     this.broadcastAll();
   }
 
+  // Runs on a timer: ends lessons past their time limit and thaws frozen
+  // screens whose time is up.
   endExpiredLessons(now = Date.now()) {
     for (const lesson of [...this.lessons.values()]) {
-      if (now > lesson.endsAt) this.endLesson(lesson.id, 'time limit');
+      if (now > lesson.endsAt) {
+        this.endLesson(lesson.id, 'time limit');
+        continue;
+      }
+      for (const [tabletId, f] of [...lesson.frozen]) {
+        if (now >= f.until) {
+          lesson.frozen.delete(tabletId);
+          this.sendLessonState(tabletId);
+          this.scheduleBroadcast(lesson.id);
+        }
+      }
     }
   }
 
@@ -150,6 +169,7 @@ export class Hub {
     this.live.delete(tabletId);
     this.sendLessonState(tabletId);
     this.deliverPendingLinks(tabletId);
+    this.deliverPendingMessages(tabletId);
     this.broadcastAll(); // unjoined-tablet lists and pupil counts change
     return { lesson, name };
   }
@@ -182,6 +202,7 @@ export class Hub {
   removeFromLesson(lessonId, tabletId, notify = true) {
     const lesson = this.lessons.get(lessonId);
     if (!lesson || !lesson.participants.delete(tabletId)) return;
+    lesson.frozen.delete(tabletId);
     this.tabletLesson.delete(tabletId);
     this.live.delete(tabletId);
     if (notify) this.sendLessonState(tabletId);
@@ -204,6 +225,7 @@ export class Hub {
     const lesson = this.lessonForTablet(tabletId);
     if (!lesson) return this.sendToDevice(tabletId, { type: 'lesson', active: false });
     const p = lesson.participants.get(tabletId);
+    const f = lesson.frozen.get(tabletId);
     this.sendToDevice(tabletId, {
       type: 'lesson',
       active: true,
@@ -212,7 +234,87 @@ export class Hub {
       nameRequested: p.nameRequested,
       allowedDomains: lesson.allowedDomains,
       allowedApps: lesson.allowedApps,
+      // Time left rather than a clock time, so the tablet's own clock doesn't matter.
+      freeze: f ? { remainingMs: Math.max(0, f.until - Date.now()), text: f.text } : null,
     });
+  }
+
+  // Picks the tablets an action applies to: the ones given, or everyone.
+  targetsFor(lesson, tabletIds) {
+    return Array.isArray(tabletIds) && tabletIds.length
+      ? tabletIds.filter((id) => lesson.participants.has(id))
+      : [...lesson.participants.keys()];
+  }
+
+  // ---- Messages --------------------------------------------------------------
+
+  // A short one-way message that pops up on pupils' tablets.
+  sendMessage(lessonId, { text, tabletIds }) {
+    const lesson = this.getLesson(lessonId);
+    const clean = typeof text === 'string' ? text.trim().replace(/\s+/g, ' ') : '';
+    if (!clean) throw new Error('Type a message first');
+    if (clean.length > MAX_MESSAGE_LENGTH) throw new Error(`Keep messages under ${MAX_MESSAGE_LENGTH} characters`);
+    const targets = this.targetsFor(lesson, tabletIds);
+    if (!targets.length) throw new Error('No pupils have joined yet');
+    const message = {
+      id: crypto.randomBytes(6).toString('hex'),
+      text: clean,
+      sentAt: Date.now(),
+      targets: Object.fromEntries(targets.map((id) => [id, 'sent'])),
+    };
+    lesson.messages.push(message);
+    // Staff-to-pupil messages are kept in the audit log for accountability.
+    this.audit('message.send', { lessonId, text: clean, pupilCount: targets.length });
+    for (const id of targets) this.deliverPendingMessages(id);
+    this.scheduleBroadcast(lessonId);
+    return message;
+  }
+
+  deliverPendingMessages(tabletId) {
+    const lesson = this.lessonForTablet(tabletId);
+    if (!lesson || !this.devices.has(tabletId)) return;
+    for (const m of lesson.messages) {
+      if (m.targets[tabletId] === 'sent') this.sendToDevice(tabletId, { type: 'message', id: m.id, text: m.text });
+    }
+  }
+
+  recordMessageAck(tabletId, messageId, stage) {
+    if (!MESSAGE_STAGES.includes(stage)) return;
+    const lesson = this.lessonForTablet(tabletId);
+    const m = lesson && lesson.messages.find((x) => x.id === messageId);
+    if (!m || !(tabletId in m.targets)) return;
+    if (MESSAGE_STAGES.indexOf(stage) > MESSAGE_STAGES.indexOf(m.targets[tabletId])) {
+      m.targets[tabletId] = stage;
+      this.scheduleBroadcast(lesson.id);
+    }
+  }
+
+  // ---- Freezing screens --------------------------------------------------------
+
+  freeze(lessonId, { tabletIds, text, minutes } = {}) {
+    const lesson = this.getLesson(lessonId);
+    const mins = Math.min(FREEZE_MAX_MINUTES, Math.max(1, Number(minutes) || FREEZE_DEFAULT_MINUTES));
+    const clean = typeof text === 'string' ? text.trim().replace(/\s+/g, ' ').slice(0, 120) : '';
+    const targets = this.targetsFor(lesson, tabletIds);
+    if (!targets.length) throw new Error('No pupils have joined yet');
+    const until = Date.now() + mins * 60_000;
+    for (const id of targets) {
+      lesson.frozen.set(id, { until, text: clean });
+      this.sendLessonState(id);
+    }
+    this.audit('screens.freeze', { lessonId, minutes: mins, pupilCount: targets.length });
+    this.scheduleBroadcast(lessonId);
+    return { until, count: targets.length };
+  }
+
+  unfreeze(lessonId, { tabletIds } = {}) {
+    const lesson = this.getLesson(lessonId);
+    const targets = Array.isArray(tabletIds) && tabletIds.length ? tabletIds : [...lesson.frozen.keys()];
+    for (const id of targets) {
+      if (lesson.frozen.delete(id)) this.sendLessonState(id);
+    }
+    this.audit('screens.unfreeze', { lessonId, pupilCount: targets.length });
+    this.scheduleBroadcast(lessonId);
   }
 
   // ---- Links -----------------------------------------------------------------
@@ -223,9 +325,7 @@ export class Hub {
     const lesson = this.getLesson(lessonId);
     const clean = normaliseLink(url);
     if (!clean) throw new Error('That does not look like a web address');
-    const targets = Array.isArray(tabletIds) && tabletIds.length
-      ? tabletIds.filter((id) => lesson.participants.has(id))
-      : [...lesson.participants.keys()];
+    const targets = this.targetsFor(lesson, tabletIds);
     if (!targets.length) throw new Error('No pupils have joined yet');
 
     const domain = normaliseDomain(new URL(clean).hostname);
@@ -294,6 +394,7 @@ export class Hub {
     this.sendToDevice(tablet.id, { type: 'welcome', tabletNumber: tablet.number, serverTime: Date.now() });
     this.sendLessonState(tablet.id);
     this.deliverPendingLinks(tablet.id);
+    this.deliverPendingMessages(tablet.id);
     this.broadcastAll();
   }
 
@@ -326,6 +427,9 @@ export class Hub {
       }
       case 'status':
         this.recordStatus(tabletId, msg);
+        break;
+      case 'messageAck':
+        this.recordMessageAck(tabletId, cleanString(msg.id, 40), msg.stage);
         break;
       case 'linkAck':
         this.recordLinkAck(tabletId, cleanString(msg.id, 40), msg.stage);
@@ -444,6 +548,8 @@ export class Hub {
       perms: report ? report.perms : null,
       battery: report ? report.battery : null,
       links: {},
+      messages: {},
+      frozen: null,
     };
     if (connected) {
       if (!report) view.status = 'unknown';
@@ -462,6 +568,11 @@ export class Hub {
     for (const link of lesson.links) {
       if (tabletId in link.targets) view.links[link.id] = link.targets[tabletId];
     }
+    for (const m of lesson.messages) {
+      if (tabletId in m.targets) view.messages[m.id] = m.targets[tabletId];
+    }
+    const f = lesson.frozen.get(tabletId);
+    if (f) view.frozen = { until: f.until };
     return view;
   }
 
@@ -489,6 +600,8 @@ export class Hub {
         allowedDomains: lesson.allowedDomains,
         allowedApps: lesson.allowedApps,
         links: lesson.links.map((l) => ({ id: l.id, url: l.url, sentAt: l.sentAt })),
+        messages: lesson.messages.map((m) => ({ id: m.id, text: m.text, sentAt: m.sentAt })),
+        frozenCount: lesson.frozen.size,
       },
       pupils,
       serverTime: Date.now(),

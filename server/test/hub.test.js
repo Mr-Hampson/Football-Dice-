@@ -208,3 +208,51 @@ test('/app forwards tablets to the newest app download', async (t) => {
   assert.equal(res.status, 302);
   assert.match(res.headers.get('location'), /releases\/latest\/download\/classroom-hub\.apk$/);
 });
+
+test('messages pop up on tablets, and screens freeze and thaw', async (t) => {
+  const { server, hub, store } = createApp({ password: 'x', releasesApi: null, log: () => {} });
+  await new Promise((r) => server.listen(0, r));
+  const wsBase = `ws://localhost:${server.address().port}`;
+  const sockets = [];
+  t.after(() => { for (const ws of sockets) ws.terminate(); server.close(); });
+
+  const { code } = store.createSetupCode();
+  const { token, tablet } = store.enrolTablet(code, '3');
+  const ws = new WebSocket(`${wsBase}/ws/device`, { headers: { Authorization: `Bearer ${token}` } });
+  sockets.push(ws);
+  const box = inbox(ws);
+  await new Promise((r) => ws.on('open', r));
+
+  const lesson = hub.startLesson({ title: 'Test' });
+  ws.send(JSON.stringify({ type: 'join', code: lesson.joinCode, name: 'Amy K' }));
+  await box.next((m) => m.type === 'lesson' && m.active);
+
+  // Message: delivered, then seen when the pupil presses OK.
+  const got = box.next((m) => m.type === 'message');
+  assert.throws(() => hub.sendMessage(lesson.id, { text: '   ' }), /Type a message/);
+  const msg = hub.sendMessage(lesson.id, { text: 'Back on task, please' });
+  assert.equal((await got).text, 'Back on task, please');
+  ws.send(JSON.stringify({ type: 'messageAck', id: msg.id, stage: 'delivered' }));
+  ws.send(JSON.stringify({ type: 'messageAck', id: msg.id, stage: 'seen' }));
+  await new Promise((r) => setTimeout(r, 100));
+  assert.equal(hub.lessonState(lesson.id).pupils[0].messages[msg.id], 'seen');
+
+  // Freeze: the tablet is told how long is left; unfreeze clears it.
+  const frozen = box.next((m) => m.type === 'lesson' && m.freeze);
+  hub.freeze(lesson.id, { text: 'Eyes on me' });
+  const f = (await frozen).freeze;
+  assert.equal(f.text, 'Eyes on me');
+  assert.ok(f.remainingMs > 4.9 * 60_000 && f.remainingMs <= 5 * 60_000);
+  assert.ok(hub.lessonState(lesson.id).pupils[0].frozen);
+  const thawed = box.next((m) => m.type === 'lesson' && m.active && !m.freeze);
+  hub.unfreeze(lesson.id);
+  await thawed;
+
+  // A freeze always ends on its own.
+  hub.freeze(lesson.id, { minutes: 1 });
+  const expired = box.next((m) => m.type === 'lesson' && m.active && !m.freeze);
+  hub.endExpiredLessons(Date.now() + 61_000);
+  await expired;
+  assert.equal(hub.lessonState(lesson.id).pupils[0].frozen, null);
+  assert.equal(tablet.number, '3');
+});

@@ -24,6 +24,9 @@ const STATUS_TEXT = {
 };
 const SUMMARY_ORDER = ['on', 'off', 'idle', 'unknown', 'asleep', 'offline'];
 
+// One-tap messages. Teachers can also type their own.
+const QUICK_MESSAGES = ['Back on task, please', 'Eyes on the board', 'Check the board for instructions', '5 minutes left', 'Save your work now', 'Well done!'];
+
 const state = {
   view: 'lesson',
   lessonId: null,
@@ -32,6 +35,7 @@ const state = {
   startDomains: [],
   ws: null,
   wsRetry: 1000,
+  clockOffset: 0, // server clock minus this laptop's clock
   live: false, // is the WebSocket open?
   pollTimer: null, // fallback refresh when WebSockets are blocked
 };
@@ -185,6 +189,7 @@ function handleState(msg) {
     msg.lessonId = null;
   }
   state.snap = msg;
+  if (msg.serverTime) state.clockOffset = msg.serverTime - Date.now();
   // Forget selections of pupils who have left.
   const ids = new Set((msg.pupils || []).map((p) => p.id));
   for (const id of state.selected) if (!ids.has(id)) state.selected.delete(id);
@@ -280,6 +285,18 @@ function renderRunning(snap) {
   const n = state.selected.size;
   $('sendSelectedBtn').disabled = n === 0;
   $('sendSelectedBtn').textContent = `Send to selected (${n})`;
+  $('msgSelectedBtn').disabled = n === 0;
+  $('msgSelectedBtn').textContent = `Send to selected (${n})`;
+  if (!$('quickMessages').childElementCount) {
+    $('quickMessages').append(...QUICK_MESSAGES.map((text) => el('button', {
+      type: 'button', class: 'quick',
+      onclick: () => sendMessage(text, state.selected.size ? [...state.selected] : null),
+      title: 'Sends to selected pupils, or everyone if none are selected',
+    }, text)));
+  }
+  const frozen = pupils.filter((p) => p.frozen).length;
+  $('unfreezeAllBtn').hidden = frozen === 0;
+  $('unfreezeAllBtn').textContent = `Unfreeze all (${frozen})`;
   $('actionBar').hidden = n === 0;
   $('selectedCount').textContent = `${n} selected:`;
 }
@@ -294,6 +311,21 @@ function cardDetail(p) {
     case 'idle': return 'Not using an app';
     default: return '';
   }
+}
+
+function messageSummary(lesson, p) {
+  for (let i = lesson.messages.length - 1; i >= 0; i--) {
+    const stage = p.messages[lesson.messages[i].id];
+    if (stage) return `Message: ${{ sent: '⏳ waiting', delivered: '✓ received', seen: '✓✓ seen' }[stage]}`;
+  }
+  return null;
+}
+
+function freezeLeft(p) {
+  if (!p.frozen) return null;
+  const ms = p.frozen.until - (Date.now() + state.clockOffset);
+  const s = Math.max(0, Math.ceil(ms / 1000));
+  return `${Math.floor(s / 60)}:${String(s % 60).padStart(2, '0')}`;
 }
 
 function linkSummary(lesson, p) {
@@ -332,11 +364,12 @@ function renderGrid(snap) {
     const badges = [];
     if (p.duplicateName) badges.push(el('div', { class: 'badge' }, '⚠ Same name as another tablet'));
     if (p.nameRequested) badges.push(el('div', { class: 'badge info' }, '✎ Asked to retype name'));
+    if (p.frozen) badges.push(el('div', { class: 'badge frozen' }, `❄ Frozen · ${freezeLeft(p)} left`));
     if (p.connected && p.perms && (!p.perms.usage || !p.perms.website)) {
       badges.push(el('div', { class: 'detail' }, !p.perms.usage ? '⚠ App tracking permission off' : '⚠ Website check off'));
     }
     return el('div', {
-      class: `card s-${p.status}${selected ? ' selected' : ''}`,
+      class: `card s-${p.status}${selected ? ' selected' : ''}${p.frozen ? ' is-frozen' : ''}`,
       role: 'button',
       tabindex: '0',
       'aria-pressed': selected ? 'true' : 'false',
@@ -350,6 +383,7 @@ function renderGrid(snap) {
     el('div', { class: 'detail' }, cardDetail(p)),
     badges,
     quick,
+    el('div', { class: 'linkstate' }, messageSummary(snap.lesson, p)),
     el('div', { class: 'linkstate' }, linkSummary(snap.lesson, p)));
   }));
 }
@@ -407,6 +441,26 @@ function sendLink(tabletIds) {
     state.selected.clear();
     render();
   });
+}
+
+async function sendMessage(text, tabletIds) {
+  $('messageError').textContent = '';
+  try {
+    await api('POST', lessonUrl('/messages'), { text, tabletIds });
+    $('messageInput').value = '';
+    state.selected.clear();
+    render();
+  } catch (err) {
+    $('messageError').textContent = err.message;
+  }
+}
+
+function freeze(tabletIds) {
+  return guarded(() => api('POST', lessonUrl('/freeze'), { tabletIds }));
+}
+
+function unfreeze(tabletIds) {
+  return guarded(() => api('POST', lessonUrl('/unfreeze'), { tabletIds }));
 }
 
 // ---- Tablets view ----------------------------------------------------------
@@ -486,6 +540,15 @@ function wire() {
     state.selected.clear();
     render();
   }));
+  $('messageForm').addEventListener('submit', (e) => {
+    e.preventDefault();
+    sendMessage($('messageInput').value, null);
+  });
+  $('msgSelectedBtn').addEventListener('click', () => sendMessage($('messageInput').value, [...state.selected]));
+  $('freezeAllBtn').addEventListener('click', () => freeze(null));
+  $('unfreezeAllBtn').addEventListener('click', () => unfreeze(null));
+  $('freezeSelBtn').addEventListener('click', async () => { await freeze([...state.selected]); state.selected.clear(); render(); });
+  $('unfreezeSelBtn').addEventListener('click', async () => { await unfreeze([...state.selected]); state.selected.clear(); render(); });
   $('clearSelBtn').addEventListener('click', () => {
     state.selected.clear();
     render();
@@ -497,6 +560,11 @@ function wire() {
     $('codeServer').textContent = location.origin;
     $('codeDialog').showModal();
   });
+
+  // Count down frozen screens every second.
+  setInterval(() => {
+    if (state.view === 'lesson' && state.snap && state.snap.pupils && state.snap.pupils.some((p) => p.frozen)) render();
+  }, 1000);
 
   // Keep "last seen" text fresh, and the tablets list when it is open.
   setInterval(() => {

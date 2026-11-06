@@ -17,6 +17,7 @@ import android.os.Handler
 import android.os.IBinder
 import android.os.Looper
 import android.os.PowerManager
+import android.os.SystemClock
 import okhttp3.OkHttpClient
 import okhttp3.Request
 import okhttp3.Response
@@ -61,6 +62,22 @@ class HubService : Service() {
 
     private val reconnectRunnable = Runnable { connect() }
 
+    /** The freeze the hub asked for, so it can be re-shown if the overlay restarts. */
+    private var currentFreeze: Pair<Long, String>? = null // (ends at elapsedRealtime, text)
+
+    // Safety: if the hub has been unreachable for a minute, lift any freeze.
+    private val thawWhenOffline = Runnable {
+        currentFreeze = null
+        WebsiteCheckService.instance?.overlays?.hideFreeze()
+    }
+
+    private val updateCheck = object : Runnable {
+        override fun run() {
+            checkForUpdate()
+            handler.postDelayed(this, UPDATE_CHECK_MS)
+        }
+    }
+
     private val screenReceiver = object : BroadcastReceiver() {
         override fun onReceive(context: Context, intent: Intent) {
             if (intent.action == Intent.ACTION_SCREEN_ON && socket == null) reconnectNow()
@@ -87,6 +104,8 @@ class HubService : Service() {
             networkCallback = cb
         }
         handler.post(tick)
+        handler.postDelayed(updateCheck, 30_000)
+        running = this
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
@@ -101,12 +120,15 @@ class HubService : Service() {
             ACTION_RECONNECT -> reconnectNow()
             ACTION_JOIN -> sendJoin("join", intent.getStringExtra(EXTRA_CODE), intent.getStringExtra(EXTRA_NAME))
             ACTION_RENAME -> sendJoin("rename", null, intent.getStringExtra(EXTRA_NAME))
+            ACTION_MESSAGE_SEEN -> intent.getStringExtra(EXTRA_MESSAGE_ID)?.let { messageAck(it, "seen") }
         }
         if (socket == null) connect()
         return START_STICKY
     }
 
     override fun onDestroy() {
+        if (running === this) running = null
+        WebsiteCheckService.instance?.overlays?.hideAll()
         handler.removeCallbacksAndMessages(null)
         unregisterReceiver(screenReceiver)
         if (Build.VERSION.SDK_INT >= 24) {
@@ -157,6 +179,7 @@ class HubService : Service() {
             handler.post {
                 if (socket !== webSocket) return@post
                 retryDelayMs = INITIAL_RETRY_MS
+                handler.removeCallbacks(thawWhenOffline)
                 connected = true
                 connectionText = "Connected"
                 updateNotification()
@@ -185,6 +208,10 @@ class HubService : Service() {
         if (socket !== webSocket) return
         socket = null
         connected = false
+        if (currentFreeze != null) {
+            handler.removeCallbacks(thawWhenOffline)
+            handler.postDelayed(thawWhenOffline, OFFLINE_THAW_MS)
+        }
         if (closeCode == 4001 || httpCode == 401) {
             // The tablet was removed on the dashboard (or set up again elsewhere).
             prefs.forget()
@@ -216,6 +243,8 @@ class HubService : Service() {
                 lesson = next
                 if (next.active) joinError = null
                 if (!next.active) WebsiteState.latest = null
+                applyFreeze(if (next.active) msg.optJSONObject("freeze") else null)
+                if (!next.active) WebsiteCheckService.instance?.overlays?.hideMessage()
                 if (next.nameRequested && !wasAsked) showNamePrompt()
                 updateNotification()
                 sendStatus(force = true)
@@ -225,8 +254,16 @@ class HubService : Service() {
                 val id = msg.optString("id")
                 val url = msg.optString("url")
                 if (id.isNotEmpty() && (url.startsWith("https://") || url.startsWith("http://"))) {
-                    showLinkNotification(id, url)
                     linkAck(id, "delivered")
+                    openLink(id, url)
+                }
+            }
+            "message" -> {
+                val id = msg.optString("id")
+                val text = msg.optString("text")
+                if (id.isNotEmpty() && text.isNotEmpty()) {
+                    messageAck(id, "delivered")
+                    showMessage(id, text)
                 }
             }
         }
@@ -243,6 +280,85 @@ class HubService : Service() {
 
     private fun linkAck(id: String, stage: String) {
         send(JSONObject().put("type", "linkAck").put("id", id).put("stage", stage))
+    }
+
+    private fun messageAck(id: String, stage: String) {
+        send(JSONObject().put("type", "messageAck").put("id", id).put("stage", stage))
+    }
+
+    // ---- Links, messages and freezing ---------------------------------------
+
+    /**
+     * Opens a teacher's link straight away in Silk. Android allows this because
+     * the website check is an accessibility service. If it can't (website check
+     * off, or the screen is frozen), the pupil gets a notification to tap.
+     */
+    private fun openLink(id: String, url: String) {
+        val service = WebsiteCheckService.instance
+        if (service == null || currentFreeze != null) {
+            showLinkNotification(id, url)
+            return
+        }
+        val view = Intent(Intent.ACTION_VIEW, Uri.parse(url)).addFlags(Intent.FLAG_ACTIVITY_NEW_TASK)
+        val launchedAt = System.currentTimeMillis()
+        try {
+            service.startActivity(Intent(view).setPackage(Classifier.SILK))
+        } catch (e: Exception) {
+            try {
+                service.startActivity(view)
+            } catch (_: Exception) {
+                showLinkNotification(id, url)
+                return
+            }
+        }
+        // Android can silently refuse to open it; check Silk actually came up.
+        handler.postDelayed({
+            if (WebsiteCheckService.lastBrowserEventAt >= launchedAt) linkAck(id, "opened")
+            else showLinkNotification(id, url)
+        }, 3000)
+    }
+
+    private fun showMessage(id: String, text: String) {
+        val overlays = WebsiteCheckService.instance?.overlays
+        if (overlays != null) {
+            overlays.showMessage(text) { messageAck(id, "seen") }
+        } else {
+            showMessageNotification(id, text) // website check is off: next best thing
+        }
+    }
+
+    private fun applyFreeze(freeze: JSONObject?) {
+        if (freeze == null) {
+            currentFreeze = null
+            WebsiteCheckService.instance?.overlays?.hideFreeze()
+            return
+        }
+        val remaining = freeze.optLong("remainingMs").coerceIn(0, MAX_FREEZE_MS)
+        currentFreeze = (SystemClock.elapsedRealtime() + remaining) to freeze.optString("text")
+        reapplyOverlays()
+    }
+
+    /** Re-shows a freeze, e.g. after the website check restarts. */
+    fun reapplyOverlays() {
+        val (endsAt, text) = currentFreeze ?: return
+        val left = endsAt - SystemClock.elapsedRealtime()
+        if (left <= 0) {
+            currentFreeze = null
+            return
+        }
+        WebsiteCheckService.instance?.overlays?.showFreeze(left, text)
+    }
+
+    // ---- Updates -----------------------------------------------------------------
+
+    private fun checkForUpdate() {
+        val hub = prefs.serverUrl ?: return
+        Updater.check(hub) {
+            handler.post {
+                // Never interrupt a lesson with an update prompt.
+                if (Updater.updateAvailable && lesson?.active != true) showUpdateNotification()
+            }
+        }
     }
 
     // ---- Status reports -----------------------------------------------------
@@ -380,6 +496,35 @@ class HubService : Service() {
         notify(NAME_PROMPT_ID, notification)
     }
 
+    private fun showMessageNotification(id: String, text: String) {
+        val open = Intent(this, MainActivity::class.java).putExtra(EXTRA_MESSAGE_ID, id)
+        val pi = PendingIntent.getActivity(this, id.hashCode(), open, pendingIntentFlags())
+        @Suppress("DEPRECATION")
+        val notification = notificationBuilder(App.CHANNEL_LINKS, Notification.PRIORITY_HIGH)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("Message from your teacher")
+            .setContentText(text)
+            .setStyle(Notification.BigTextStyle().bigText(text))
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .setDefaults(Notification.DEFAULT_ALL)
+            .build()
+        notify(id.hashCode(), notification)
+    }
+
+    @Suppress("DEPRECATION") // PRIORITY_LOW only matters before Android 8
+    private fun showUpdateNotification() {
+        val pi = PendingIntent.getActivity(this, 3, Intent(this, MainActivity::class.java), pendingIntentFlags())
+        val notification = notificationBuilder(App.CHANNEL_STATUS, Notification.PRIORITY_LOW)
+            .setSmallIcon(R.drawable.ic_notify)
+            .setContentTitle("Classroom Hub update available")
+            .setContentText("Tap to open the app, then press Install update.")
+            .setContentIntent(pi)
+            .setAutoCancel(true)
+            .build()
+        notify(UPDATE_ID, notification)
+    }
+
     private fun pendingIntentFlags(): Int =
         PendingIntent.FLAG_UPDATE_CURRENT or (if (Build.VERSION.SDK_INT >= 23) PendingIntent.FLAG_IMMUTABLE else 0)
 
@@ -387,6 +532,12 @@ class HubService : Service() {
         const val ACTION_LINK_OPENED = "uk.school.classroomhub.LINK_OPENED"
         const val ACTION_RECONNECT = "uk.school.classroomhub.RECONNECT"
         const val EXTRA_LINK_ID = "linkId"
+        const val ACTION_MESSAGE_SEEN = "uk.school.classroomhub.MESSAGE_SEEN"
+        const val EXTRA_MESSAGE_ID = "messageId"
+        private const val UPDATE_ID = 3
+        private const val UPDATE_CHECK_MS = 6 * 60 * 60 * 1000L
+        private const val OFFLINE_THAW_MS = 60_000L
+        private const val MAX_FREEZE_MS = 10 * 60 * 1000L
         const val ACTION_JOIN = "uk.school.classroomhub.JOIN"
         const val ACTION_RENAME = "uk.school.classroomhub.RENAME"
         const val EXTRA_CODE = "code"
@@ -406,6 +557,18 @@ class HubService : Service() {
         @Volatile var lastClassification: Classification? = null
         /** Why the last join or rename was refused, shown on the main screen. */
         @Volatile var joinError: String? = null
+
+        /** The running service, so the website check can reach it (main thread). */
+        @Volatile var running: HubService? = null
+
+        /** Called when the website check starts: re-show a freeze in progress. */
+        fun onWebsiteCheckReady() {
+            running?.reapplyOverlays()
+        }
+
+        fun messageSeen(context: Context, messageId: String) {
+            start(context, Intent(context, HubService::class.java).setAction(ACTION_MESSAGE_SEEN).putExtra(EXTRA_MESSAGE_ID, messageId))
+        }
 
         fun start(context: Context, action: String? = null) {
             val intent = Intent(context, HubService::class.java).setAction(action)

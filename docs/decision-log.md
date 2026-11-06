@@ -32,6 +32,15 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 - Each build is published as a **public GitHub Release**, so tablets can install it from Silk without a GitHub account [Agreed, trial only]. A move to a locked-down, private distribution is required if the project goes commercial.
 - Builds are signed with a **permanent school key** held in GitHub secrets (from Test build 6), so updates install over older versions. The key holder must keep a backup [Confirmed].
 
+### v0.5 – messages, freezing screens, auto-opening links, in-app updates (agreed)
+- **Messages to pupils** [Agreed]: one-tap or typed, to everyone or selected pupils. They show as a **pop-up card with an OK button** over any app, with ✓ received / ✓✓ seen ticks. One-way only (no replies), for safeguarding.
+- **Freeze screens** [Agreed]: a full-screen “Eyes on your teacher” cover. Ends on its own after **5 minutes** (1–10 allowed), when the teacher unfreezes, when the lesson ends, or if the tablet loses the hub for a minute.
+- **Links open automatically** [Agreed], with a notification as the fallback.
+- **In-app updates** [Agreed]: the tablet offers “Install update” outside lessons. Android 11 still needs one confirm tap per tablet.
+- How: the pop-ups and the freeze use the website-check accessibility service's overlay window. **[Unverified on Fire OS: test on the spare tablet first.]** It isn't a true device lock: a forced restart or holding the power button still works.
+- **Changed decision:** device locking was "outside the MVP" in v0.3. It's now in, as a trial feature, at the school's request.
+- **For the DPO:** the audit log records the **text** of staff-to-pupil messages, for safeguarding accountability; confirm or change. Freezing is a new kind of control over pupil devices, so add it to the DPIA and to the pupils' "what your teacher can see" information.
+
 ### First real-tablet test (6 Nov 2026) — passed
 - On the spare Fire HD 10 (13th Gen) with the hosted hub: setup, joining with code + name, **foreground app tracking**, **Silk website detection (on/off task)**, links, and reconnecting all worked [Confirmed by the school]. The biggest technical unknown, reading Silk's address bar, works on this model.
 - The teacher dashboard went blank on the school network because its live connection was blocked; it now falls back to refreshing every few seconds. Tablets connected without problems.

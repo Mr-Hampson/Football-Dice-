@@ -76,6 +76,7 @@ export function createApp({
   lessonMaxMinutes = 120,
   trustProxy = false,
   appDownloadUrl = 'https://github.com/Mr-Hampson/Football-Dice-/releases/latest/download/classroom-hub.apk',
+  releasesApi = 'https://api.github.com/repos/Mr-Hampson/Football-Dice-/releases/latest',
   log = console.log,
 } = {}) {
   if (!password) throw new Error('A teacher password is required');
@@ -89,6 +90,23 @@ export function createApp({
     fs.mkdirSync(dataDir, { recursive: true });
     fs.appendFileSync(auditPath, `${JSON.stringify({ at: new Date().toISOString(), action, ...details })}\n`);
   };
+
+  // Newest pupil-app build, from the GitHub release tags ("test-build-12").
+  // Cached so 30 tablets checking at once cause one lookup, not 30.
+  let versionCache = { at: 0, value: { versionCode: 0, downloadUrl: appDownloadUrl } };
+  async function latestAppVersion() {
+    if (!releasesApi || Date.now() - versionCache.at < 10 * 60 * 1000) return versionCache.value;
+    versionCache.at = Date.now();
+    try {
+      const r = await fetch(releasesApi, { headers: { Accept: 'application/vnd.github+json', 'User-Agent': 'classroom-hub' } });
+      if (r.ok) {
+        const tag = String((await r.json()).tag_name || '');
+        const n = Number((tag.match(/(\d+)$/) || [])[1]);
+        if (Number.isFinite(n) && n > 0) versionCache.value = { versionCode: n, downloadUrl: appDownloadUrl };
+      }
+    } catch { /* keep the last known value */ }
+    return versionCache.value;
+  }
 
   const hub = new Hub(store, { audit, lessonMaxMs: lessonMaxMinutes * 60 * 1000 });
   const sessions = new Map(); // token -> expiresAt
@@ -207,6 +225,17 @@ export function createApp({
       const link = hub.sendLink(lessonId, await readJson(req));
       return send(res, 201, { id: link.id, url: link.url });
     }],
+    ['POST', /^\/api\/lessons\/([a-f0-9]+)\/messages$/, true, async (req, res, [lessonId]) => {
+      const m = hub.sendMessage(lessonId, await readJson(req));
+      return send(res, 201, { id: m.id });
+    }],
+    ['POST', /^\/api\/lessons\/([a-f0-9]+)\/freeze$/, true, async (req, res, [lessonId]) => {
+      return send(res, 200, hub.freeze(lessonId, await readJson(req)));
+    }],
+    ['POST', /^\/api\/lessons\/([a-f0-9]+)\/unfreeze$/, true, async (req, res, [lessonId]) => {
+      hub.unfreeze(lessonId, await readJson(req));
+      return send(res, 200, { ok: true });
+    }],
     ['POST', /^\/api\/lessons\/([a-f0-9]+)\/rename-requests$/, true, async (req, res, [lessonId]) => {
       hub.requestRename(lessonId, (await readJson(req)).tabletIds);
       return send(res, 200, { ok: true });
@@ -230,6 +259,9 @@ export function createApp({
       audit('tablet.remove', { number: tablet ? tablet.number : null });
       return send(res, 200, { ok: true });
     }],
+
+    // Tablets ask which app version is newest, to offer an update.
+    ['GET', /^\/api\/app-version$/, false, async (req, res) => send(res, 200, await latestAppVersion())],
 
     // Called once by each tablet during setup, with the school setup code
     // and the number on the tablet's sticker.
@@ -347,6 +379,7 @@ if (process.argv[1] && path.resolve(process.argv[1]) === fileURLToPath(import.me
     lessonMaxMinutes: Number(process.env.LESSON_MAX_MINUTES) || 120,
     trustProxy: process.env.TRUST_PROXY === 'true',
     appDownloadUrl: process.env.APP_DOWNLOAD_URL || undefined,
+    releasesApi: process.env.APP_RELEASES_API || undefined,
   });
   server.listen(port, () => {
     console.log(`\nClassroom Hub is running.`);

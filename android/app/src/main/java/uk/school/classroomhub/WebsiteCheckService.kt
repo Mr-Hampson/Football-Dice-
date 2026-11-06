@@ -41,9 +41,32 @@ class WebsiteCheckService : AccessibilityService() {
     private var pendingPackage: String? = null
     private val readRunnable = Runnable { pendingPackage?.let { readAddressBar(it) } }
 
+    lateinit var overlays: ScreenOverlays
+        private set
+
+    override fun onServiceConnected() {
+        super.onServiceConnected()
+        overlays = ScreenOverlays(this)
+        instance = this
+        HubService.onWebsiteCheckReady()
+    }
+
+    override fun onUnbind(intent: android.content.Intent?): Boolean {
+        if (instance === this) instance = null
+        if (::overlays.isInitialized) overlays.hideAll()
+        return super.onUnbind(intent)
+    }
+
+    override fun onDestroy() {
+        if (instance === this) instance = null
+        if (::overlays.isInitialized) overlays.hideAll()
+        super.onDestroy()
+    }
+
     override fun onAccessibilityEvent(event: AccessibilityEvent?) {
         val pkg = event?.packageName?.toString() ?: return
         if (pkg !in Classifier.BROWSERS) return
+        lastBrowserEventAt = System.currentTimeMillis()
         if (HubService.lesson?.active != true) return // nothing is read outside lessons
         // Pages fire many events while loading; wait for a quiet moment.
         pendingPackage = pkg
@@ -96,6 +119,12 @@ class WebsiteCheckService : AccessibilityService() {
     }
 
     companion object {
+        /** The running service, if the website check is switched on (main thread). */
+        @Volatile var instance: WebsiteCheckService? = null
+
+        /** When a browser last showed anything on screen: used to confirm a link opened. */
+        @Volatile var lastBrowserEventAt = 0L
+
         /**
          * Chrome's address bar is "url_bar". Silk is built on Chromium so it
          * MAY use the same name - unverified until tested on a Fire tablet.

@@ -65,6 +65,8 @@ class MainActivity : Activity() {
     private var errorView: TextView? = null
     private var checklist: LinearLayout? = null
     private var detailsView: TextView? = null
+    private var updateBox: LinearLayout? = null
+    private var lastUpdateKey = ""
     private var lastChecklistKey = ""
 
     override fun onCreate(savedInstanceState: Bundle?) {
@@ -75,6 +77,19 @@ class MainActivity : Activity() {
             setPadding(dp(20), dp(16), dp(20), dp(24))
         }
         setContentView(ScrollView(this).apply { addView(root) })
+        handleMessageTap(intent)
+    }
+
+    override fun onNewIntent(intent: Intent) {
+        super.onNewIntent(intent)
+        handleMessageTap(intent)
+    }
+
+    /** Opened from a "message from your teacher" notification: mark it seen. */
+    private fun handleMessageTap(intent: Intent?) {
+        val id = intent?.getStringExtra(HubService.EXTRA_MESSAGE_ID) ?: return
+        intent.removeExtra(HubService.EXTRA_MESSAGE_ID)
+        HubService.messageSeen(this, id)
     }
 
     override fun onResume() {
@@ -104,8 +119,9 @@ class MainActivity : Activity() {
         if (next != mode) {
             mode = next
             root.removeAllViews()
-            connectionView = null; infoView = null; errorView = null; checklist = null; detailsView = null
+            connectionView = null; infoView = null; errorView = null; checklist = null; detailsView = null; updateBox = null
             lastChecklistKey = ""
+            lastUpdateKey = ""
             when (next) {
                 Mode.SETUP -> buildSetup()
                 Mode.JOIN -> buildJoin()
@@ -250,6 +266,7 @@ class MainActivity : Activity() {
     // ---- Footer: checklist + technical details --------------------------------------
 
     private fun buildFooter() {
+        updateBox = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }.also { root.addView(it) }
         root.addView(label("Tablet setup checklist"))
         checklist = LinearLayout(this).apply { orientation = LinearLayout.VERTICAL }.also { root.addView(it) }
         root.addView(TextView(this).apply {
@@ -286,6 +303,27 @@ class MainActivity : Activity() {
             }
         }
         detailsView?.text = diagnostics()
+        updateUpdateBox()
+    }
+
+    /** "Update available" card, shown outside lessons only. */
+    private fun updateUpdateBox() {
+        val box = updateBox ?: return
+        val inLesson = HubService.lesson?.active == true
+        val show = !inLesson && (Updater.updateAvailable || Updater.status != null)
+        val key = "$show/${Updater.updateAvailable}/${Updater.status}/${Updater.busy}"
+        if (key == lastUpdateKey) return
+        lastUpdateKey = key
+        box.removeAllViews()
+        if (!show) return
+        box.addView(label(if (Updater.updateAvailable) "Update available (version 0.1.${Updater.latestVersion})" else "App update"))
+        Updater.status?.let { box.addView(body(it)) }
+        if (Updater.updateAvailable && !Updater.busy) {
+            box.addView(Button(this).apply {
+                text = "Install update"
+                setOnClickListener { prefs.serverUrl?.let { Updater.install(this@MainActivity, it) }; lastUpdateKey = "" }
+            })
+        }
     }
 
     private fun diagnostics(): String {
@@ -296,7 +334,7 @@ class MainActivity : Activity() {
             appendLine("Tablet number: ${prefs.tabletNumber}")
             appendLine("Device: ${Build.MANUFACTURER} ${Build.MODEL}")
             appendLine("Android API ${Build.VERSION.SDK_INT} (${Build.VERSION.RELEASE}), build ${Build.DISPLAY}")
-            appendLine("App version: ${BuildConfig.VERSION_NAME}")
+            appendLine("App version: ${BuildConfig.VERSION_NAME} (newest on hub: ${Updater.latestVersion.takeIf { it > 0 } ?: "not checked"})")
             appendLine("Hub: ${prefs.serverUrl}")
             appendLine()
             appendLine("Foreground app: ${HubService.lastForeground ?: "-"}")

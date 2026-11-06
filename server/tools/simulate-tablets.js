@@ -89,6 +89,10 @@ function simulateTablet(token, number, name, getJoinCode) {
           setTimeout(() => send({ type: 'rename', name: `${name.split(' ')[0]} ${String.fromCharCode(65 + number % 26)}` }), 4000);
         }
         report();
+      } else if (msg.type === 'message') {
+        // The pop-up arrives at once; the pupil presses OK a few seconds later.
+        send({ type: 'messageAck', id: msg.id, stage: 'delivered' });
+        setTimeout(() => send({ type: 'messageAck', id: msg.id, stage: 'seen' }), 1500 + Math.random() * 6000);
       } else if (msg.type === 'link') {
         send({ type: 'linkAck', id: msg.id, stage: 'delivered' });
         if (Math.random() < 0.8) {
