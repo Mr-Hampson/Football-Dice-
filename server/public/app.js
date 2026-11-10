@@ -7,9 +7,14 @@ const $ = (id) => document.getElementById(id);
 // Sites a teacher can tick when starting a lesson. Each preset is a set of
 // domains (sites like Google Classroom need several to work).
 const PRESETS = [
+  // Used across the school: Teams for course materials, Achieve for quizzes
+  // and homework, e-Sgoil for online lessons. Sign-in pages are included so
+  // logging in doesn't count as off task.
+  { label: 'Teams / Microsoft 365', domains: ['teams.microsoft.com', 'cloud.microsoft', 'office.com', 'microsoft365.com', 'sharepoint.com', 'login.microsoftonline.com'] },
+  { label: 'Achieve', domains: ['hashtag-learning.co.uk', 'login.microsoftonline.com'] },
+  { label: 'e-Sgoil', domains: ['e-sgoil.com'] },
   { label: 'BBC Bitesize', domains: ['bbc.co.uk', 'bbci.co.uk'] },
   { label: 'Google Classroom', domains: ['classroom.google.com', 'docs.google.com', 'drive.google.com', 'accounts.google.com'] },
-  { label: 'Microsoft 365', domains: ['office.com', 'microsoft365.com', 'sharepoint.com', 'login.microsoftonline.com'] },
   { label: 'Google Search', domains: ['google.com', 'google.co.uk'] },
   { label: 'YouTube', domains: ['youtube.com'] },
 ];
