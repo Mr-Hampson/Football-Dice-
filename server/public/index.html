@@ -140,8 +140,16 @@
     </section>
     <section class="panel">
       <h2>Tablets</h2>
+      <p class="hint">Click a column heading to sort. Click it again to reverse the order.</p>
       <table class="pupil-table">
-        <thead><tr><th>Tablet</th><th>Status</th><th>Last seen</th><th>App</th><th>Battery</th><th>Needs attention</th><th></th></tr></thead>
+        <thead id="tabletHead"><tr>
+          <th><button type="button" class="sort" data-sort="number">Tablet</button></th>
+          <th><button type="button" class="sort" data-sort="status">Status</button></th>
+          <th><button type="button" class="sort" data-sort="lastSeen">Last seen</button></th>
+          <th><button type="button" class="sort" data-sort="app">App</button></th>
+          <th><button type="button" class="sort" data-sort="battery">Battery</button></th>
+          <th><button type="button" class="sort" data-sort="problems">Needs attention</button></th>
+          <th></th></tr></thead>
         <tbody id="tabletRows"></tbody>
       </table>
     </section>

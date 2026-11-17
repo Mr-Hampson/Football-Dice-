@@ -495,11 +495,63 @@ function unfreeze(tabletIds) {
 
 // ---- Tablets view ----------------------------------------------------------
 
+// Sorting: click a column heading; click again to reverse. The choice is
+// remembered on this computer. Default: tablets with problems first.
+const TABLET_SORTS = {
+  number: (t) => [Number(t.number) || 0, String(t.number)],
+  // In a lesson, then on, then off.
+  status: (t) => [t.connected ? (t.lessonTitle ? 0 : 1) : 2, t.lessonTitle || ''],
+  // Connected now counts as most recent; never seen goes last.
+  lastSeen: (t) => [t.connected ? -Infinity : -(t.lastSeen || -Infinity)],
+  app: (t) => [t.appVersion == null ? 1 : 0, t.appVersion || ''],
+  // Lowest battery first; unknown battery last.
+  battery: (t) => [t.battery == null ? 1 : 0, t.battery ?? 0],
+  // Most problems first.
+  problems: (t) => [-t.problems.length],
+};
+const tabletSort = (() => {
+  const [key, dir] = (recall('tabletSort') || '').split(':');
+  return TABLET_SORTS[key] ? { key, dir: dir === 'desc' ? 'desc' : 'asc' } : { key: 'problems', dir: 'asc' };
+})();
+let tabletList = [];
+
+function compareKeys(a, b) {
+  for (let i = 0; i < a.length; i++) {
+    if (a[i] === b[i]) continue;
+    if (typeof a[i] === 'number' && typeof b[i] === 'number') return a[i] - b[i];
+    return String(a[i]).localeCompare(String(b[i]), 'en-GB', { numeric: true });
+  }
+  return 0;
+}
+
+function sortTablets(tablets) {
+  const keyOf = TABLET_SORTS[tabletSort.key];
+  const sign = tabletSort.dir === 'desc' ? -1 : 1;
+  return [...tablets].sort((a, b) => sign * compareKeys(keyOf(a), keyOf(b))
+    // Ties always fall back to tablet number, lowest first.
+    || compareKeys(TABLET_SORTS.number(a), TABLET_SORTS.number(b)));
+}
+
+function setTabletSort(key) {
+  if (tabletSort.key === key) tabletSort.dir = tabletSort.dir === 'asc' ? 'desc' : 'asc';
+  else Object.assign(tabletSort, { key, dir: 'asc' });
+  store('tabletSort', `${tabletSort.key}:${tabletSort.dir}`);
+  renderTablets();
+}
+
 async function loadTablets() {
   const { tablets } = await api('GET', '/api/tablets');
-  // Tablets with problems first, so they're easy to spot before a lesson.
-  tablets.sort((a, b) => (b.problems.length > 0) - (a.problems.length > 0));
-  const rows = tablets.map((t) => el('tr', {},
+  tabletList = tablets;
+  renderTablets();
+}
+
+function renderTablets() {
+  for (const btn of document.querySelectorAll('#tabletHead button.sort')) {
+    const active = btn.dataset.sort === tabletSort.key;
+    btn.classList.toggle('active', active);
+    btn.closest('th').setAttribute('aria-sort', active ? (tabletSort.dir === 'asc' ? 'ascending' : 'descending') : 'none');
+  }
+  const rows = sortTablets(tabletList).map((t) => el('tr', {},
     el('td', {}, `Tablet ${t.number}`),
     el('td', {}, t.connected ? (t.lessonTitle ? `In lesson: ${t.lessonTitle}` : 'On, not in a lesson') : 'Off / not connected'),
     el('td', {}, t.connected ? 'now' : ago(t.lastSeen)),
@@ -579,6 +631,9 @@ function wire() {
   });
   $('navLesson').addEventListener('click', () => setView('lesson'));
   $('navTablets').addEventListener('click', () => setView('tablets'));
+  for (const btn of document.querySelectorAll('#tabletHead button.sort')) {
+    btn.addEventListener('click', () => setTabletSort(btn.dataset.sort));
+  }
   $('navAudit').addEventListener('click', () => setView('audit'));
   $('boardBtn').addEventListener('click', () => {
     window.open(`/board.html#${state.lessonId}`, 'classroomHubBoard');

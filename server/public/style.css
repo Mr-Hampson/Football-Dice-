@@ -114,6 +114,13 @@ button.small, .small button { padding: 4px 10px; font-size: 0.85rem; }
 
 .pupil-table { width: 100%; border-collapse: collapse; margin: 14px 0; }
 .pupil-table th, .pupil-table td { text-align: left; padding: 8px 6px; border-bottom: 1px solid var(--line); }
+/* Sortable column headings on the Tablets page */
+.pupil-table th button.sort { all: unset; cursor: pointer; font-weight: 700; white-space: nowrap; }
+.pupil-table th button.sort:hover { text-decoration: underline; }
+.pupil-table th button.sort:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 3px; }
+.pupil-table th button.sort::after { content: ' ↕'; color: var(--muted); font-weight: 400; }
+.pupil-table th[aria-sort="ascending"] button.sort::after { content: ' ▲'; color: var(--accent); }
+.pupil-table th[aria-sort="descending"] button.sort::after { content: ' ▼'; color: var(--accent); }
 .pupil-table td:last-child { display: flex; flex-wrap: wrap; gap: 6px; }
 .class-list { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 12px; }
 
