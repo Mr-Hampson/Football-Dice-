@@ -124,6 +124,7 @@ Labels: **[Confirmed]** fact or agreed requirement · **[Assumption]** ·
 | No activity history stored; activity cleared at lesson end | Data minimisation |
 | Monitoring only during a lesson the teacher starts | Proportionality; matches the "stay in school" use |
 | Tablet identity: one-time setup code → permanent device token (only its hash is stored) | Individual tablets; simple and revocable |
+| Each tablet's last-connected time is saved to disk (at most every 10 minutes) | A hub restart or deploy no longer makes every tablet look unused; it records the tablet only, never the pupil |
 | Single shared teacher password | Prototype only, to be replaced (see outstanding questions) |
 | JSON file storage | Fine for one-school testing; move to a database before scaling |
 | `targetSdk 30`, `minSdk 22` | Matches Fire OS 8 while still installing on older Fire OS |

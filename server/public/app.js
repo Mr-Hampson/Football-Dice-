@@ -554,7 +554,7 @@ function renderTablets() {
   const rows = sortTablets(tabletList).map((t) => el('tr', {},
     el('td', {}, `Tablet ${t.number}`),
     el('td', {}, t.connected ? (t.lessonTitle ? `In lesson: ${t.lessonTitle}` : 'On, not in a lesson') : 'Off / not connected'),
-    el('td', {}, t.connected ? 'now' : ago(t.lastSeen)),
+    el('td', {}, t.connected ? 'now' : t.seenUnknown ? 'not since hub update' : ago(t.lastSeen)),
     el('td', {}, t.appVersion || '–'),
     el('td', {}, t.battery == null ? '–' : `${t.battery}%`),
     el('td', {}, t.problems.length

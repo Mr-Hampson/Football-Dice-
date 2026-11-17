@@ -366,3 +366,30 @@ test('dashboard can be limited to the school network; tablets are not', async (t
   });
   assert.equal(enrol.status, 200);
 });
+
+test('tablet last-seen times survive a hub restart', async () => {
+  const fs = await import('node:fs');
+  const os = await import('node:os');
+  const path = await import('node:path');
+  const dir = fs.mkdtempSync(path.join(os.tmpdir(), 'hub-seen-'));
+  const first = createApp({ password: 'x', dataDir: dir, log: () => {} });
+  const { code } = first.store.createSetupCode();
+  const a = first.store.enrolTablet(code, '1').tablet;
+  const b = first.store.enrolTablet(code, '2').tablet;
+  first.hub.markSeen(a.id, true);
+  const seenAt = first.hub.lastSeen.get(a.id);
+  first.server.close();
+  // Tablet 2 was set up but never connected before the restart.
+  first.store.getTablet(b.id).enrolledAt = Date.now() - 10 * 24 * 60 * 60 * 1000;
+  first.store.save();
+
+  const second = createApp({ password: 'x', dataDir: dir, log: () => {} });
+  const rows = Object.fromEntries(second.hub.tabletsOverview().map((t) => [t.number, t]));
+  assert.equal(rows['1'].lastSeen, seenAt);
+  assert.deepEqual(rows['1'].problems, []);
+  // Unknown is shown as unknown, not flagged as "not seen for 3+ days".
+  assert.equal(rows['2'].lastSeen, null);
+  assert.equal(rows['2'].seenUnknown, true);
+  assert.deepEqual(rows['2'].problems, []);
+  second.server.close();
+});

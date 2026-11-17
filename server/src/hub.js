@@ -42,7 +42,10 @@ export class Hub {
     this.health = new Map(); // tabletId -> { perms, battery, appVersion, versionCode, at } (about the tablet, not the pupil)
     this.lessons = new Map(); // lessonId -> lesson
     this.devices = new Map(); // tabletId -> { ws, lastMessageAt }
-    this.lastSeen = new Map(); // tabletId -> timestamp (memory only)
+    // tabletId -> timestamp. Starts from the times saved on disk, so a hub
+    // restart (e.g. a deploy) doesn't make every tablet look unused.
+    this.lastSeen = new Map(store.listTablets().filter((t) => t.lastSeen).map((t) => [t.id, t.lastSeen]));
+    this.startedAt = Date.now();
     this.live = new Map(); // tabletId -> latest status report
     this.tabletLesson = new Map(); // tabletId -> lessonId
     this.joinFailures = new Map(); // tabletId -> { count, resetAt }
@@ -404,7 +407,7 @@ export class Hub {
     const existing = this.devices.get(tablet.id);
     if (existing && existing.ws !== ws) existing.ws.close(4000, 'Replaced by a newer connection');
     this.devices.set(tablet.id, { ws, lastMessageAt: Date.now() });
-    this.lastSeen.set(tablet.id, Date.now());
+    this.markSeen(tablet.id, true);
 
     ws.on('message', (raw) => {
       let msg;
@@ -419,6 +422,7 @@ export class Hub {
       const current = this.devices.get(tablet.id);
       if (current && current.ws === ws) {
         this.devices.delete(tablet.id);
+        this.markSeen(tablet.id, true);
         this.broadcastAll();
       }
     });
@@ -429,6 +433,12 @@ export class Hub {
     this.deliverPendingLinks(tablet.id);
     this.deliverPendingMessages(tablet.id);
     this.broadcastAll();
+  }
+
+  markSeen(tabletId, force = false) {
+    const now = Date.now();
+    this.lastSeen.set(tabletId, now);
+    this.store.recordSeen(tabletId, now, force);
   }
 
   // Called when a tablet is removed on the Tablets page.
@@ -444,7 +454,7 @@ export class Hub {
   handleDeviceMessage(tabletId, msg) {
     const device = this.devices.get(tabletId);
     if (device) device.lastMessageAt = Date.now();
-    this.lastSeen.set(tabletId, Date.now());
+    this.markSeen(tabletId);
     if (!msg || typeof msg !== 'object') return;
 
     switch (msg.type) {
@@ -530,6 +540,7 @@ export class Hub {
       if (now - device.lastMessageAt > DEVICE_TIMEOUT_MS) {
         device.ws.terminate();
         this.devices.delete(tabletId);
+        this.store.recordSeen(tabletId, device.lastMessageAt, true);
         this.broadcastAll();
       }
     }
@@ -558,12 +569,16 @@ export class Hub {
       if (h && !h.perms.website) problems.push('Website check is off');
       if (h && h.battery != null && h.battery <= 20) problems.push(`Battery low (${h.battery}%)`);
       if (h && latestVersionCode && h.versionCode && h.versionCode < latestVersionCode) problems.push('App needs updating');
-      if (!this.devices.has(t.id) && (!lastSeen || now - lastSeen > 3 * 24 * 60 * 60 * 1000)) problems.push('Not seen for 3+ days');
+      // Tablets set up before last-seen times were saved have no time until
+      // they next connect: that's "not known", not "never".
+      const seenUnknown = !lastSeen && t.enrolledAt < this.startedAt;
+      if (!this.devices.has(t.id) && !seenUnknown && (!lastSeen || now - lastSeen > 3 * 24 * 60 * 60 * 1000)) problems.push('Not seen for 3+ days');
       return {
         id: t.id,
         number: t.number,
         connected: this.devices.has(t.id),
         lastSeen,
+        seenUnknown,
         lessonTitle: lesson ? lesson.title : null,
         enrolledAt: t.enrolledAt,
         appVersion: h ? h.appVersion : null,

@@ -49,7 +49,7 @@ make outgoing connections over the normal secure web port (443).
 
 ### Privacy by design
 - Nothing is monitored until a pupil joins a lesson, and monitoring stops when it ends (automatically after 2 hours at most).
-- **No pupil names are stored.** Names exist in memory for the lesson only. The server stores only tablet numbers.
+- **No pupil names are stored.** Names exist in memory for the lesson only. The server stores only tablet numbers, and when each tablet last connected (not who was using it).
 - The tablet decides on-task/off-task itself. A site is named to the server only when it is **off** the lesson list.
 - Pupil activity is held in server memory only and cleared when the lesson ends. Nothing about what pupils did is written to disk.
 - The audit log (`data/audit.log`) records teacher actions: log in, start or end a lesson, send a link.

@@ -44,6 +44,8 @@ export function normaliseTabletNumber(input) {
   return /^[A-Z0-9-]{1,8}$/.test(s) ? s : null;
 }
 
+const SEEN_SAVE_EVERY_MS = 10 * 60 * 1000;
+
 export class Store {
   constructor(filePath) {
     this.filePath = filePath;
@@ -112,6 +114,18 @@ export class Store {
     if (!token) return null;
     const h = hashToken(token);
     return this.data.tablets.find((t) => t.tokenHash === h) || null;
+  }
+
+  // When the tablet last connected, kept on disk so it survives a hub
+  // restart. Only the tablet, never who was using it. To keep disk writes
+  // low it is saved at most every 10 minutes, unless force is set.
+  recordSeen(id, at = Date.now(), force = false) {
+    const t = this.getTablet(id);
+    if (!t) return;
+    const due = force || !t.lastSeen || at - t.lastSeen >= SEEN_SAVE_EVERY_MS;
+    if (!due) return;
+    t.lastSeen = at;
+    this.save();
   }
 
   removeTablet(id) {
